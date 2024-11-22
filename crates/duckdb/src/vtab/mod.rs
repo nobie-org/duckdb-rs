@@ -17,10 +17,12 @@ pub use self::arrow::{
 #[cfg(feature = "vtab-excel")]
 mod excel;
 
+use function::ScalarFunction;
 pub use function::{BindInfo, FunctionInfo, InitInfo, TableFunction};
+use libduckdb_sys::duckdb_vector;
 pub use value::Value;
 
-use crate::core::{DataChunkHandle, LogicalTypeHandle, LogicalTypeId};
+use crate::core::{DataChunkHandle, FlatVector, LogicalTypeHandle, LogicalTypeId};
 use ffi::{duckdb_bind_info, duckdb_data_chunk, duckdb_function_info, duckdb_init_info};
 
 use ffi::duckdb_malloc;
@@ -156,6 +158,46 @@ where
     }
 }
 
+/// Duckdb scalar function trait
+///
+pub trait VScalar: Sized {
+    /// The actual function
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe because it:
+    ///
+    /// - Dereferences multiple raw pointers (`func``).
+    ///
+    unsafe fn func(
+        func: &FunctionInfo,
+        input: &mut DataChunkHandle,
+        output: &mut FlatVector,
+    ) -> Result<(), Box<dyn std::error::Error>>;
+    /// The parameters of the table function
+    /// default is None
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        None
+    }
+
+    /// The return type of the scalar function
+    /// default is None
+    fn return_type() -> LogicalTypeHandle;
+}
+
+unsafe extern "C" fn scalar_func<T>(info: duckdb_function_info, input: duckdb_data_chunk, output: duckdb_vector)
+where
+    T: VScalar,
+{
+    let info = FunctionInfo::from(info);
+    let mut input = DataChunkHandle::new_unowned(input);
+    let mut output_vector = FlatVector::from(output);
+    let result = T::func(&info, &mut input, &mut output_vector);
+    if result.is_err() {
+        info.set_error(&result.err().unwrap().to_string());
+    }
+}
+
 impl Connection {
     /// Register the given TableFunction with the current db
     #[inline]
@@ -175,6 +217,21 @@ impl Connection {
         }
         self.db.borrow_mut().register_table_function(table_function)
     }
+
+    /// Register the given ScalarFunction with the current db
+    #[inline]
+    pub fn register_scalar_function<S: VScalar>(&self, name: &str) -> Result<()> {
+        let scalar_function = ScalarFunction::default();
+        scalar_function
+            .set_name(name)
+            .set_return_type(&S::return_type())
+            // .set_extra_info()
+            .set_function(Some(scalar_func::<S>));
+        for ty in S::parameters().unwrap_or_default() {
+            scalar_function.add_parameter(&ty);
+        }
+        self.db.borrow_mut().register_scalar_function(scalar_function)
+    }
 }
 
 impl InnerConnection {
@@ -188,12 +245,24 @@ impl InnerConnection {
         }
         Ok(())
     }
+
+    /// Register the given ScalarFunction with the current db
+    pub fn register_scalar_function(&mut self, scalar_function: ScalarFunction) -> Result<()> {
+        unsafe {
+            let rc = ffi::duckdb_register_scalar_function(self.con, scalar_function.ptr);
+            if rc != ffi::DuckDBSuccess {
+                return Err(Error::DuckDBFailure(ffi::Error::new(rc), None));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
     use crate::core::Inserter;
+    use core::panic;
     use std::{
         error::Error,
         ffi::{c_char, CString},
@@ -301,6 +370,27 @@ mod test {
         }
     }
 
+    struct SomeTestFunction {}
+
+    impl VScalar for SomeTestFunction {
+        unsafe fn func(
+            func: &FunctionInfo,
+            input: &mut DataChunkHandle,
+            output: &mut FlatVector,
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            println!("Function info {:?}", func);
+            let rows = input.len();
+            for _ in 0..rows {
+                output.insert(0, "hello");
+            }
+            Ok(())
+        }
+
+        fn return_type() -> LogicalTypeHandle {
+            LogicalTypeHandle::from(LogicalTypeId::Varchar)
+        }
+    }
+
     #[test]
     fn test_table_function() -> Result<(), Box<dyn Error>> {
         let conn = Connection::open_in_memory()?;
@@ -325,8 +415,28 @@ mod test {
         Ok(())
     }
 
+    #[test]
+    fn test_scalar_function() -> Result<(), Box<dyn Error>> {
+        let conn = Connection::open_in_memory()?;
+        conn.register_scalar_function::<SomeTestFunction>("hello")?;
+
+        let val = conn.query_row("select hello() as hello", [], |row| <(String,)>::try_from(row))?;
+        assert_eq!(val, ("hello".to_string(),));
+
+        let batches = conn
+            .prepare("select hello() as hello from range(10)")?
+            .query_arrow([])?
+            .collect::<Vec<_>>();
+
+        print_batches(&batches)?;
+
+        Ok(())
+    }
+
+    use ::arrow::util::pretty::print_batches;
     #[cfg(feature = "vtab-loadable")]
     use duckdb_loadable_macros::duckdb_entrypoint;
+    use libduckdb_sys::{duckdb_result_arrow_array, duckdb_string_t};
 
     // this function is never called, but is still type checked
     // Exposes a extern C function named "libhello_ext_init" in the compiled dynamic library,

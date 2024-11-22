@@ -1,3 +1,9 @@
+use libduckdb_sys::{
+    duckdb_create_scalar_function, duckdb_destroy_scalar_function, duckdb_scalar_function,
+    duckdb_scalar_function_add_parameter, duckdb_scalar_function_set_extra_info, duckdb_scalar_function_set_function,
+    duckdb_scalar_function_set_name, duckdb_scalar_function_set_return_type, duckdb_vector,
+};
+
 use super::{
     ffi::{
         duckdb_bind_add_result_column, duckdb_bind_get_extra_info, duckdb_bind_get_named_parameter,
@@ -383,5 +389,93 @@ impl FunctionInfo {
 impl From<duckdb_function_info> for FunctionInfo {
     fn from(ptr: duckdb_function_info) -> Self {
         Self(ptr)
+    }
+}
+
+/// A function that returns a queryable scalar function
+#[derive(Debug)]
+pub struct ScalarFunction {
+    pub(crate) ptr: duckdb_scalar_function,
+}
+
+impl Drop for ScalarFunction {
+    fn drop(&mut self) {
+        unsafe {
+            duckdb_destroy_scalar_function(&mut self.ptr);
+        }
+    }
+}
+
+impl ScalarFunction {
+    /// Adds a parameter to the scalar function.
+    ///
+    /// # Arguments
+    ///  * `logical_type`: The type of the parameter to add.
+    pub fn add_parameter(&self, logical_type: &LogicalTypeHandle) -> &Self {
+        unsafe {
+            duckdb_scalar_function_add_parameter(self.ptr, logical_type.ptr);
+        }
+        self
+    }
+
+    /// Sets the return type of the scalar function.
+    ///
+    /// # Arguments
+    ///  * `logical_type`: The return type of the scalar function.
+    pub fn set_return_type(&self, logical_type: &LogicalTypeHandle) -> &Self {
+        unsafe {
+            duckdb_scalar_function_set_return_type(self.ptr, logical_type.ptr);
+        }
+        self
+    }
+
+    /// Sets the main function of the scalar function
+    ///
+    /// # Arguments
+    ///  * `function`: The function
+    pub fn set_function(
+        &self,
+        func: Option<unsafe extern "C" fn(info: duckdb_function_info, input: duckdb_data_chunk, output: duckdb_vector)>,
+    ) -> &Self {
+        unsafe {
+            duckdb_scalar_function_set_function(self.ptr, func);
+        }
+        self
+    }
+
+    /// Creates a new empty scalar function.
+    pub fn new() -> Self {
+        Self {
+            ptr: unsafe { duckdb_create_scalar_function() },
+        }
+    }
+
+    /// Sets the name of the given scalar function.
+    ///
+    /// # Arguments
+    ///  * `name`: The name of the scalar function
+    pub fn set_name(&self, name: &str) -> &ScalarFunction {
+        unsafe {
+            let string = CString::from_vec_unchecked(name.as_bytes().into());
+            duckdb_scalar_function_set_name(self.ptr, string.as_ptr());
+        }
+        self
+    }
+
+    /// Assigns extra information to the scalar function that can be fetched during binding, etc.
+    ///
+    /// # Arguments
+    /// * `extra_info`: The extra information
+    /// * `destroy`: The callback that will be called to destroy the bind data (if any)
+    ///
+    /// # Safety
+    pub unsafe fn set_extra_info(&self, extra_info: *mut c_void, destroy: duckdb_delete_callback_t) {
+        duckdb_scalar_function_set_extra_info(self.ptr, extra_info, destroy);
+    }
+}
+
+impl Default for ScalarFunction {
+    fn default() -> Self {
+        Self::new()
     }
 }
