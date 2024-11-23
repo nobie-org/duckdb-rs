@@ -1,7 +1,9 @@
+use crate::Arrow;
 use crate::{error::Error, inner_connection::InnerConnection, Connection, Result};
 
 use super::{ffi, ffi::duckdb_free};
 use std::ffi::c_void;
+use std::sync::Arc;
 
 mod function;
 mod value;
@@ -17,12 +19,15 @@ pub use self::arrow::{
 #[cfg(feature = "vtab-excel")]
 mod excel;
 
+use ::arrow::array::{Array, RecordBatch};
+use ::arrow::datatypes::DataType;
+use arrow::data_chunk_to_arrow;
 use function::ScalarFunction;
 pub use function::{BindInfo, FunctionInfo, InitInfo, TableFunction};
 use libduckdb_sys::duckdb_vector;
 pub use value::Value;
 
-use crate::core::{DataChunkHandle, FlatVector, LogicalTypeHandle, LogicalTypeId};
+use crate::core::{DataChunkHandle, FlatVector, LogicalTypeHandle, LogicalTypeId, Vector};
 use ffi::{duckdb_bind_info, duckdb_data_chunk, duckdb_function_info, duckdb_init_info};
 
 use ffi::duckdb_malloc;
@@ -173,6 +178,107 @@ pub trait VScalar: Sized {
     unsafe fn func(
         func: &FunctionInfo,
         input: &mut DataChunkHandle,
+        output: duckdb_vector,
+    ) -> Result<(), Box<dyn std::error::Error>>;
+    /// The parameters of the table function
+    /// default is None
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        None
+    }
+
+    /// The return type of the scalar function
+    /// default is None
+    fn return_type() -> LogicalTypeHandle;
+}
+
+/// blah
+pub trait ArrowScalar: Sized {
+    /// blah
+    fn func(input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>>;
+
+    /// blah
+    fn parameters() -> Option<Vec<DataType>>;
+
+    /// blah
+    fn return_type() -> DataType;
+}
+
+struct ArrowScalarWrapper<T> {
+    inner: T,
+}
+
+impl<T> VScalar for ArrowScalarWrapper<T>
+where
+    T: ArrowScalar,
+{
+    unsafe fn func(
+        func: &FunctionInfo,
+        input: &mut DataChunkHandle,
+        output: duckdb_vector,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        todo!()
+    }
+
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        T::parameters().map(|v| {
+            v.into_iter()
+                .flat_map(|dt| LogicalTypeId::try_from(&dt).ok().map(Into::into))
+                .collect()
+        })
+    }
+
+    fn return_type() -> LogicalTypeHandle {
+        LogicalTypeId::try_from(&T::return_type())
+            .ok()
+            .map(Into::into)
+            .unwrap_or_else(|| LogicalTypeHandle::from(LogicalTypeId::Integer))
+    }
+}
+
+impl<T> VScalar for T
+where
+    T: ArrowScalar,
+{
+    unsafe fn func(
+        func: &FunctionInfo,
+        input: &mut DataChunkHandle,
+        output: duckdb_vector,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let input = data_chunk_to_arrow(&input)?;
+        let res = T::func(input)?;
+        todo!()
+    }
+
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        T::parameters().map(|v| {
+            v.into_iter()
+                .flat_map(|dt| LogicalTypeId::try_from(&dt).ok().map(Into::into))
+                .collect()
+        })
+    }
+
+    fn return_type() -> LogicalTypeHandle {
+        LogicalTypeId::try_from(&T::return_type())
+            .ok()
+            .map(Into::into)
+            .unwrap_or_else(|| LogicalTypeHandle::from(LogicalTypeId::Integer))
+    }
+}
+
+/// blah
+pub trait VScalarFlatVector: Sized {
+    // type ExtraInfo;
+    /// The actual function
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe because it:
+    ///
+    /// - Dereferences multiple raw pointers (`func``).
+    ///
+    unsafe fn func(
+        func: &FunctionInfo,
+        input: &mut DataChunkHandle,
         output: &mut FlatVector,
     ) -> Result<(), Box<dyn std::error::Error>>;
     /// The parameters of the table function
@@ -186,14 +292,34 @@ pub trait VScalar: Sized {
     fn return_type() -> LogicalTypeHandle;
 }
 
+// impl<T> VScalar for T
+// where
+//     T: VScalarFlatVector,
+// {
+//     unsafe fn func(
+//         func: &FunctionInfo,
+//         input: &mut DataChunkHandle,
+//         output: duckdb_vector,
+//     ) -> Result<(), Box<dyn std::error::Error>> {
+//         T::func(func, input, &mut FlatVector::from(output))
+//     }
+
+//     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+//         T::parameters()
+//     }
+
+//     fn return_type() -> LogicalTypeHandle {
+//         T::return_type()
+//     }
+// }
+
 unsafe extern "C" fn scalar_func<T>(info: duckdb_function_info, input: duckdb_data_chunk, output: duckdb_vector)
 where
     T: VScalar,
 {
     let info = FunctionInfo::from(info);
     let mut input = DataChunkHandle::new_unowned(input);
-    let mut output_vector = FlatVector::from(output);
-    let result = T::func(&info, &mut input, &mut output_vector);
+    let result = T::func(&info, &mut input, output);
     if result.is_err() {
         info.set_error(&result.err().unwrap().to_string());
     }
@@ -377,9 +503,9 @@ mod test {
         unsafe fn func(
             func: &FunctionInfo,
             input: &mut DataChunkHandle,
-            output: &mut FlatVector,
+            output: duckdb_vector,
         ) -> Result<(), Box<dyn std::error::Error>> {
-            println!("Function info {:?}", func);
+            let output = &mut FlatVector::from(output);
             let rows = input.len();
             for _ in 0..rows {
                 output.insert(0, "hello");
@@ -419,8 +545,9 @@ mod test {
         unsafe fn func(
             _func: &FunctionInfo,
             input: &mut DataChunkHandle,
-            output: &mut FlatVector,
+            output: duckdb_vector,
         ) -> Result<(), Box<dyn std::error::Error>> {
+            let output = &mut FlatVector::from(output);
             let flat_counts = input.flat_vector(1);
             let values = input.flat_vector(0);
             let values = values.as_slice::<*mut duckdb_string_t>();

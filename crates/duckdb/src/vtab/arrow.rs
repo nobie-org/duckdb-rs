@@ -21,7 +21,6 @@ use arrow::{
 
 use libduckdb_sys::{duckdb_from_timestamp, duckdb_time, duckdb_timestamp};
 use num::{cast::AsPrimitive, ToPrimitive};
-use polars_core::utils::rayon::vec;
 
 /// A pointer to the Arrow record batch for the table function.
 #[repr(C)]
@@ -179,6 +178,22 @@ pub fn to_duckdb_type_id(data_type: &DataType) -> Result<LogicalTypeId, Box<dyn 
     Ok(type_id)
 }
 
+impl TryFrom<&DataType> for LogicalTypeId {
+    type Error = Box<dyn std::error::Error>;
+
+    fn try_from(data_type: &DataType) -> Result<Self, Self::Error> {
+        to_duckdb_type_id(data_type)
+    }
+}
+
+impl TryFrom<DataType> for LogicalTypeId {
+    type Error = Box<dyn std::error::Error>;
+
+    fn try_from(data_type: DataType) -> Result<Self, Self::Error> {
+        to_duckdb_type_id(&data_type)
+    }
+}
+
 /// Convert arrow DataType to duckdb logical type
 pub fn to_duckdb_logical_type(data_type: &DataType) -> Result<LogicalTypeHandle, Box<dyn std::error::Error>> {
     match data_type {
@@ -254,6 +269,109 @@ pub fn data_chunk_to_arrow(chunk: &DataChunkHandle) -> Result<RecordBatch, Box<d
     }))?)
 }
 
+trait VectorAtPosition {
+    type Vec: WritableVector;
+
+    fn vector_at(&mut self, index: usize) -> Self::Vec;
+}
+
+struct DataChunkHandleSlice<'a> {
+    chunk: &'a mut DataChunkHandle,
+    index: usize,
+}
+
+impl<'a> DataChunkHandleSlice<'a> {
+    fn new(chunk: &'a mut DataChunkHandle, index: usize) -> Self {
+        Self { chunk, index }
+    }
+}
+
+impl<'a> WritableVector for DataChunkHandleSlice<'a> {
+    fn array_vector(&mut self) -> ArrayVector {
+        self.chunk.array_vector(self.index)
+    }
+
+    fn flat_vector(&mut self) -> FlatVector {
+        self.chunk.flat_vector(self.index)
+    }
+
+    fn struct_vector(&mut self) -> StructVector {
+        self.chunk.struct_vector(self.index)
+    }
+
+    fn list_vector(&mut self) -> ListVector {
+        self.chunk.list_vector(self.index)
+    }
+}
+
+trait WritableVector {
+    fn flat_vector(&mut self) -> FlatVector;
+    fn list_vector(&mut self) -> ListVector;
+    fn array_vector(&mut self) -> ArrayVector;
+    fn struct_vector(&mut self) -> StructVector;
+}
+
+fn write_arrow_array_to_vector(
+    col: &Arc<dyn Array>,
+    chunk: &mut dyn WritableVector,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match col.data_type() {
+        dt if dt.is_primitive() || matches!(dt, DataType::Boolean) => {
+            primitive_array_to_vector(col, &mut chunk.flat_vector())?;
+        }
+        DataType::Utf8 => {
+            string_array_to_vector(as_string_array(col.as_ref()), &mut chunk.flat_vector());
+        }
+        DataType::LargeUtf8 => {
+            string_array_to_vector(
+                col.as_ref()
+                    .as_any()
+                    .downcast_ref::<LargeStringArray>()
+                    .ok_or_else(|| Box::<dyn std::error::Error>::from("Unable to downcast to LargeStringArray"))?,
+                &mut chunk.flat_vector(),
+            );
+        }
+        DataType::Binary => {
+            binary_array_to_vector(as_generic_binary_array(col.as_ref()), &mut chunk.flat_vector());
+        }
+        DataType::FixedSizeBinary(_) => {
+            fixed_size_binary_array_to_vector(col.as_ref().as_fixed_size_binary(), &mut chunk.flat_vector());
+        }
+        DataType::LargeBinary => {
+            large_binary_array_to_vector(
+                col.as_ref()
+                    .as_any()
+                    .downcast_ref::<LargeBinaryArray>()
+                    .ok_or_else(|| Box::<dyn std::error::Error>::from("Unable to downcast to LargeBinaryArray"))?,
+                &mut chunk.flat_vector(),
+            );
+        }
+        DataType::List(_) => {
+            list_array_to_vector(as_list_array(col.as_ref()), &mut chunk.list_vector())?;
+        }
+        DataType::LargeList(_) => {
+            list_array_to_vector(as_large_list_array(col.as_ref()), &mut chunk.list_vector())?;
+        }
+        DataType::FixedSizeList(_, _) => {
+            fixed_size_list_array_to_vector(as_fixed_size_list_array(col.as_ref()), &mut chunk.array_vector())?;
+        }
+        DataType::Struct(_) => {
+            let struct_array = as_struct_array(col.as_ref());
+            let mut struct_vector = chunk.struct_vector();
+            struct_array_to_vector(struct_array, &mut struct_vector)?;
+        }
+        dt => {
+            return Err(format!(
+                "column with data_type {} is not supported yet, please file an issue https://github.com/wangfenjin/duckdb-rs",
+                dt
+            )
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
 /// Converts a `RecordBatch` to a `DataChunk` in the DuckDB format.
 ///
 /// # Arguments
@@ -268,59 +386,7 @@ pub fn record_batch_to_duckdb_data_chunk(
     assert_eq!(batch.num_columns(), chunk.num_columns());
     for i in 0..batch.num_columns() {
         let col = batch.column(i);
-        match col.data_type() {
-            dt if dt.is_primitive() || matches!(dt, DataType::Boolean) => {
-                primitive_array_to_vector(col, &mut chunk.flat_vector(i))?;
-            }
-            DataType::Utf8 => {
-                string_array_to_vector(as_string_array(col.as_ref()), &mut chunk.flat_vector(i));
-            }
-            DataType::LargeUtf8 => {
-                string_array_to_vector(
-                    col.as_ref()
-                        .as_any()
-                        .downcast_ref::<LargeStringArray>()
-                        .ok_or_else(|| Box::<dyn std::error::Error>::from("Unable to downcast to LargeStringArray"))?,
-                    &mut chunk.flat_vector(i),
-                );
-            }
-            DataType::Binary => {
-                binary_array_to_vector(as_generic_binary_array(col.as_ref()), &mut chunk.flat_vector(i));
-            }
-            DataType::FixedSizeBinary(_) => {
-                fixed_size_binary_array_to_vector(col.as_ref().as_fixed_size_binary(), &mut chunk.flat_vector(i));
-            }
-            DataType::LargeBinary => {
-                large_binary_array_to_vector(
-                    col.as_ref()
-                        .as_any()
-                        .downcast_ref::<LargeBinaryArray>()
-                        .ok_or_else(|| Box::<dyn std::error::Error>::from("Unable to downcast to LargeBinaryArray"))?,
-                    &mut chunk.flat_vector(i),
-                );
-            }
-            DataType::List(_) => {
-                list_array_to_vector(as_list_array(col.as_ref()), &mut chunk.list_vector(i))?;
-            }
-            DataType::LargeList(_) => {
-                list_array_to_vector(as_large_list_array(col.as_ref()), &mut chunk.list_vector(i))?;
-            }
-            DataType::FixedSizeList(_, _) => {
-                fixed_size_list_array_to_vector(as_fixed_size_list_array(col.as_ref()), &mut chunk.array_vector(i))?;
-            }
-            DataType::Struct(_) => {
-                let struct_array = as_struct_array(col.as_ref());
-                let mut struct_vector = chunk.struct_vector(i);
-                struct_array_to_vector(struct_array, &mut struct_vector)?;
-            }
-            _ => {
-                return Err(format!(
-                    "column {} is not supported yet, please file an issue https://github.com/wangfenjin/duckdb-rs",
-                    batch.schema().field(i)
-                )
-                .into());
-            }
-        }
+        write_arrow_array_to_vector(col, &mut DataChunkHandleSlice::new(chunk, i))?;
     }
     chunk.set_len(batch.num_rows());
     Ok(())
