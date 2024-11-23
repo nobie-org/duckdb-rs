@@ -1,5 +1,5 @@
 use super::{BindInfo, DataChunkHandle, Free, FunctionInfo, InitInfo, LogicalTypeHandle, LogicalTypeId, VTab};
-use std::ptr::null_mut;
+use std::{ptr::null_mut, sync::Arc};
 
 use crate::core::{ArrayVector, FlatVector, Inserter, ListVector, StructVector, Vector};
 use arrow::{
@@ -7,8 +7,9 @@ use arrow::{
         as_boolean_array, as_generic_binary_array, as_large_list_array, as_list_array, as_primitive_array,
         as_string_array, as_struct_array, Array, ArrayData, AsArray, BinaryArray, BooleanArray, Decimal128Array,
         FixedSizeBinaryArray, FixedSizeListArray, GenericListArray, GenericStringArray, IntervalMonthDayNanoArray,
-        LargeBinaryArray, LargeStringArray, OffsetSizeTrait, PrimitiveArray, StructArray,
+        LargeBinaryArray, LargeStringArray, OffsetSizeTrait, PrimitiveArray, StructArray, TimestampMicrosecondArray,
     },
+    buffer::{BooleanBuffer, Buffer, NullBuffer},
     compute::cast,
 };
 
@@ -18,7 +19,9 @@ use arrow::{
     record_batch::RecordBatch,
 };
 
+use libduckdb_sys::{duckdb_from_timestamp, duckdb_time, duckdb_timestamp};
 use num::{cast::AsPrimitive, ToPrimitive};
+use polars_core::utils::rayon::vec;
 
 /// A pointer to the Arrow record batch for the table function.
 #[repr(C)]
@@ -210,6 +213,54 @@ pub fn to_duckdb_logical_type(data_type: &DataType) -> Result<LogicalTypeHandle,
         )
         .into()),
     }
+}
+
+/// Converts flat vector to array data
+pub fn flat_vector_to_arrow_array_data(vector: &FlatVector) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+    match vector.logical_type().id() {
+        LogicalTypeId::Integer => {
+            let data = vector.as_slice::<i32>();
+
+            Ok(Arc::new(PrimitiveArray::<Int32Type>::from_iter_values_with_nulls(
+                data.iter().copied(),
+                Some(NullBuffer::new(BooleanBuffer::collect_bool(data.len(), |row| {
+                    vector.row_is_null(row as u64)
+                }))),
+            )))
+        }
+        LogicalTypeId::Timestamp => {
+            let data = vector.as_slice::<duckdb_timestamp>();
+            let micros = data.iter().map(|duckdb_timestamp { micros }| *micros);
+            let structs = TimestampMicrosecondArray::from_iter_values_with_nulls(
+                micros,
+                Some(NullBuffer::new(BooleanBuffer::collect_bool(data.len(), |row| {
+                    vector.row_is_null(row as u64)
+                }))),
+            );
+
+            Ok(Arc::new(structs))
+        }
+        _ => panic!(),
+    }
+}
+
+// converts a `DataChunk` to arrow `RecordBatch`
+pub fn data_chunk_to_arrow(chunk: &DataChunkHandle) -> Result<RecordBatch, Box<dyn std::error::Error>> {
+    let mut columns = vec![];
+    let mut schema = SchemaBuilder::new();
+    for i in 0..chunk.num_columns() {
+        let vector = chunk.flat_vector(i);
+        let array_data = flat_vector_to_arrow_array_data(&vector)?;
+        let nullable = array_data.null_count() == 0;
+        let data_type = array_data.data_type();
+        schema.push(Field::new(&i.to_string(), data_type.clone(), nullable));
+        let array: Arc<dyn Array> = Arc::new(array_data);
+        columns.push(array);
+    }
+
+    let schema = schema.finish();
+
+    Ok(RecordBatch::try_new(schema.into(), columns)?)
 }
 
 /// Converts a `RecordBatch` to a `DataChunk` in the DuckDB format.

@@ -199,13 +199,6 @@ where
     }
 }
 
-fn drop_type<T>(v: *mut c_void) {
-    let actual = v.cast::<T>();
-    unsafe {
-        Box::from_raw(actual);
-    }
-}
-
 impl Connection {
     /// Register the given TableFunction with the current db
     #[inline]
@@ -270,9 +263,7 @@ impl InnerConnection {
 mod test {
     use super::*;
     use crate::core::Inserter;
-    use core::panic;
     use std::{
-        borrow::Cow,
         error::Error,
         ffi::{c_char, CStr, CString},
         marker::PhantomData,

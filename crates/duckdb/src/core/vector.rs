@@ -1,6 +1,9 @@
 use std::{any::Any, ffi::CString, slice};
 
-use libduckdb_sys::{duckdb_array_type_array_size, duckdb_array_vector_get_child, duckdb_value, DuckDbString};
+use libduckdb_sys::{
+    duckdb_array_type_array_size, duckdb_array_vector_get_child, duckdb_validity_row_is_valid, duckdb_value,
+    DuckDbString,
+};
 
 use super::LogicalTypeHandle;
 use crate::ffi::{
@@ -57,6 +60,23 @@ impl FlatVector {
 
     pub fn hi() {
         // duckdb_vector_get_data()
+    }
+
+    pub fn row_is_null(&self, row: u64) -> bool {
+        // use idx_t entry_idx = row_idx / 64; idx_t idx_in_entry = row_idx % 64; bool is_valid = validity_mask[entry_idx] & (1 « idx_in_entry);
+        // as the row is valid function is slower
+        let valid = unsafe {
+            let validity = duckdb_vector_get_validity(self.ptr);
+
+            // validity can return a NULL pointer if the entire vector is valid
+            if validity.is_null() {
+                return false;
+            }
+
+            duckdb_validity_row_is_valid(validity, row)
+        };
+
+        !valid
     }
 
     /// Returns an unsafe mutable pointer to the vector’s
