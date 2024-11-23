@@ -19,7 +19,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 
-use libduckdb_sys::{duckdb_from_timestamp, duckdb_time, duckdb_timestamp};
+use libduckdb_sys::{duckdb_from_timestamp, duckdb_time, duckdb_timestamp, duckdb_vector};
 use num::{cast::AsPrimitive, ToPrimitive};
 
 /// A pointer to the Arrow record batch for the table function.
@@ -304,7 +304,7 @@ impl<'a> WritableVector for DataChunkHandleSlice<'a> {
     }
 }
 
-trait WritableVector {
+pub trait WritableVector {
     fn flat_vector(&mut self) -> FlatVector;
     fn list_vector(&mut self) -> ListVector;
     fn array_vector(&mut self) -> ArrayVector;
@@ -370,6 +370,24 @@ fn write_arrow_array_to_vector(
     }
 
     Ok(())
+}
+
+impl WritableVector for duckdb_vector {
+    fn array_vector(&mut self) -> ArrayVector {
+        ArrayVector::from(*self)
+    }
+
+    fn flat_vector(&mut self) -> FlatVector {
+        FlatVector::from(*self)
+    }
+
+    fn list_vector(&mut self) -> ListVector {
+        ListVector::from(*self)
+    }
+
+    fn struct_vector(&mut self) -> StructVector {
+        StructVector::from(*self)
+    }
 }
 
 /// Converts a `RecordBatch` to a `DataChunk` in the DuckDB format.

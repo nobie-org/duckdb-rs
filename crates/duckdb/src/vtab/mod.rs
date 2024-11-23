@@ -21,7 +21,7 @@ mod excel;
 
 use ::arrow::array::{Array, RecordBatch};
 use ::arrow::datatypes::DataType;
-use arrow::data_chunk_to_arrow;
+use arrow::{data_chunk_to_arrow, WritableVector};
 use function::ScalarFunction;
 pub use function::{BindInfo, FunctionInfo, InitInfo, TableFunction};
 use libduckdb_sys::duckdb_vector;
@@ -178,7 +178,7 @@ pub trait VScalar: Sized {
     unsafe fn func(
         func: &FunctionInfo,
         input: &mut DataChunkHandle,
-        output: duckdb_vector,
+        output: &mut dyn WritableVector,
     ) -> Result<(), Box<dyn std::error::Error>>;
     /// The parameters of the table function
     /// default is None
@@ -203,18 +203,18 @@ pub trait ArrowScalar: Sized {
     fn return_type() -> DataType;
 }
 
-struct ArrowScalarWrapper<T> {
+struct ArrowScalarImpl<T> {
     inner: T,
 }
 
-impl<T> VScalar for ArrowScalarWrapper<T>
+impl<T> VScalar for ArrowScalarImpl<T>
 where
     T: ArrowScalar,
 {
     unsafe fn func(
         func: &FunctionInfo,
         input: &mut DataChunkHandle,
-        output: duckdb_vector,
+        output: &mut dyn WritableVector,
     ) -> Result<(), Box<dyn std::error::Error>> {
         todo!()
     }
@@ -242,7 +242,7 @@ where
     unsafe fn func(
         func: &FunctionInfo,
         input: &mut DataChunkHandle,
-        output: duckdb_vector,
+        output: &mut dyn WritableVector,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let input = data_chunk_to_arrow(&input)?;
         let res = T::func(input)?;
@@ -313,13 +313,13 @@ pub trait VScalarFlatVector: Sized {
 //     }
 // }
 
-unsafe extern "C" fn scalar_func<T>(info: duckdb_function_info, input: duckdb_data_chunk, output: duckdb_vector)
+unsafe extern "C" fn scalar_func<T>(info: duckdb_function_info, input: duckdb_data_chunk, mut output: duckdb_vector)
 where
     T: VScalar,
 {
     let info = FunctionInfo::from(info);
     let mut input = DataChunkHandle::new_unowned(input);
-    let result = T::func(&info, &mut input, output);
+    let result = T::func(&info, &mut input, &mut output);
     if result.is_err() {
         info.set_error(&result.err().unwrap().to_string());
     }
@@ -503,9 +503,9 @@ mod test {
         unsafe fn func(
             func: &FunctionInfo,
             input: &mut DataChunkHandle,
-            output: duckdb_vector,
+            output: &mut dyn WritableVector,
         ) -> Result<(), Box<dyn std::error::Error>> {
-            let output = &mut FlatVector::from(output);
+            let output = output.flat_vector();
             let rows = input.len();
             for _ in 0..rows {
                 output.insert(0, "hello");
@@ -545,9 +545,9 @@ mod test {
         unsafe fn func(
             _func: &FunctionInfo,
             input: &mut DataChunkHandle,
-            output: duckdb_vector,
+            output: &mut dyn WritableVector,
         ) -> Result<(), Box<dyn std::error::Error>> {
-            let output = &mut FlatVector::from(output);
+            let output = output.flat_vector();
             let flat_counts = input.flat_vector(1);
             let values = input.flat_vector(0);
             let values = values.as_slice::<*mut duckdb_string_t>();
