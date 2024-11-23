@@ -236,7 +236,6 @@ impl Connection {
             // .set_extra_info()
             .set_function(Some(scalar_func::<S>));
         for ty in S::parameters().unwrap_or_default() {
-            println!("Adding parameter {:?}", ty);
             scalar_function.add_parameter(&ty);
         }
         self.db.borrow_mut().register_scalar_function(scalar_function)
@@ -381,9 +380,9 @@ mod test {
         }
     }
 
-    struct SomeTestFunction {}
+    struct HelloTestFunction {}
 
-    impl VScalar for SomeTestFunction {
+    impl VScalar for HelloTestFunction {
         unsafe fn func(
             func: &FunctionInfo,
             input: &mut DataChunkHandle,
@@ -400,11 +399,6 @@ mod test {
         fn return_type() -> LogicalTypeHandle {
             LogicalTypeHandle::from(LogicalTypeId::Varchar)
         }
-    }
-
-    // Alternative simplified version if you're sure about the input
-    fn c_str_to_string_unchecked<'a>(c_str: *const c_char) -> std::borrow::Cow<'a, str> {
-        unsafe { CStr::from_ptr(c_str).to_string_lossy() }
     }
 
     // Add a lifetime parameter and PhantomData to tie it to that lifetime
@@ -487,7 +481,7 @@ mod test {
     #[test]
     fn test_scalar_function() -> Result<(), Box<dyn Error>> {
         let conn = Connection::open_in_memory()?;
-        conn.register_scalar_function::<SomeTestFunction>("hello")?;
+        conn.register_scalar_function::<HelloTestFunction>("hello")?;
 
         let val = conn.query_row("select hello() as hello", [], |row| <(String,)>::try_from(row))?;
         assert_eq!(val, ("hello".to_string(),));
@@ -508,7 +502,7 @@ mod test {
         conn.register_scalar_function::<Repeat>("nobie_repeat")?;
 
         let batches = conn
-            .prepare("select repeat('Ho ho ho, it is holiday season 🎄🎄', 10) as message from range(8)")?
+            .prepare("select repeat('Ho ho ho, 🎅🎄', 10) as message from range(8)")?
             .query_arrow([])?
             .collect::<Vec<_>>();
 
