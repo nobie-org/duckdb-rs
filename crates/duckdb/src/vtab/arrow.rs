@@ -311,7 +311,8 @@ pub trait WritableVector {
     fn struct_vector(&mut self) -> StructVector;
 }
 
-fn write_arrow_array_to_vector(
+/// Writes an Arrow array to a `WritableVector`.
+pub fn write_arrow_array_to_vector(
     col: &Arc<dyn Array>,
     chunk: &mut dyn WritableVector,
 ) -> Result<(), Box<dyn std::error::Error>> {

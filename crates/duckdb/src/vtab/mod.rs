@@ -21,7 +21,7 @@ mod excel;
 
 use ::arrow::array::{Array, RecordBatch};
 use ::arrow::datatypes::DataType;
-use arrow::{data_chunk_to_arrow, WritableVector};
+use arrow::{data_chunk_to_arrow, write_arrow_array_to_vector, WritableVector};
 use function::ScalarFunction;
 pub use function::{BindInfo, FunctionInfo, InitInfo, TableFunction};
 use libduckdb_sys::duckdb_vector;
@@ -203,50 +203,18 @@ pub trait ArrowScalar: Sized {
     fn return_type() -> DataType;
 }
 
-struct ArrowScalarImpl<T> {
-    inner: T,
-}
-
-impl<T> VScalar for ArrowScalarImpl<T>
-where
-    T: ArrowScalar,
-{
-    unsafe fn func(
-        func: &FunctionInfo,
-        input: &mut DataChunkHandle,
-        output: &mut dyn WritableVector,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        todo!()
-    }
-
-    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-        T::parameters().map(|v| {
-            v.into_iter()
-                .flat_map(|dt| LogicalTypeId::try_from(&dt).ok().map(Into::into))
-                .collect()
-        })
-    }
-
-    fn return_type() -> LogicalTypeHandle {
-        LogicalTypeId::try_from(&T::return_type())
-            .ok()
-            .map(Into::into)
-            .unwrap_or_else(|| LogicalTypeHandle::from(LogicalTypeId::Integer))
-    }
-}
-
 impl<T> VScalar for T
 where
     T: ArrowScalar,
 {
     unsafe fn func(
-        func: &FunctionInfo,
+        _func: &FunctionInfo,
         input: &mut DataChunkHandle,
         output: &mut dyn WritableVector,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let input = data_chunk_to_arrow(&input)?;
+        let input = data_chunk_to_arrow(input)?;
         let res = T::func(input)?;
-        todo!()
+        write_arrow_array_to_vector(&res, output)
     }
 
     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
@@ -497,6 +465,24 @@ mod test {
         }
     }
 
+    struct HelloArrowScalar {}
+
+    impl ArrowScalar for HelloArrowScalar {
+        fn func(input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+            let name = input.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+            let result = name.iter().map(|v| format!("Hello {}", v.unwrap())).collect::<Vec<_>>();
+            Ok(Arc::new(StringArray::from(result)))
+        }
+
+        fn parameters() -> Option<Vec<DataType>> {
+            Some(vec![DataType::Utf8])
+        }
+
+        fn return_type() -> DataType {
+            DataType::Utf8
+        }
+    }
+
     struct HelloTestFunction {}
 
     impl VScalar for HelloTestFunction {
@@ -629,7 +615,7 @@ mod test {
         Ok(())
     }
 
-    use ::arrow::util::pretty::print_batches;
+    use ::arrow::{array::StringArray, util::pretty::print_batches};
     #[cfg(feature = "vtab-loadable")]
     use duckdb_loadable_macros::duckdb_entrypoint;
     use libduckdb_sys::{duckdb_result_arrow_array, duckdb_string_t, duckdb_string_t_data};
