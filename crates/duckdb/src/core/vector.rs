@@ -1,6 +1,6 @@
 use std::{any::Any, ffi::CString, slice};
 
-use libduckdb_sys::{duckdb_array_type_array_size, duckdb_array_vector_get_child, DuckDbString};
+use libduckdb_sys::{duckdb_array_type_array_size, duckdb_array_vector_get_child, duckdb_value, DuckDbString};
 
 use super::LogicalTypeHandle;
 use crate::ffi::{
@@ -53,6 +53,10 @@ impl FlatVector {
     /// Returns the capacity of the vector
     pub fn capacity(&self) -> usize {
         self.capacity
+    }
+
+    pub fn hi() {
+        // duckdb_vector_get_data()
     }
 
     /// Returns an unsafe mutable pointer to the vector’s

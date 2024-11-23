@@ -161,6 +161,7 @@ where
 /// Duckdb scalar function trait
 ///
 pub trait VScalar: Sized {
+    // type ExtraInfo;
     /// The actual function
     ///
     /// # Safety
@@ -198,6 +199,13 @@ where
     }
 }
 
+fn drop_type<T>(v: *mut c_void) {
+    let actual = v.cast::<T>();
+    unsafe {
+        Box::from_raw(actual);
+    }
+}
+
 impl Connection {
     /// Register the given TableFunction with the current db
     #[inline]
@@ -228,6 +236,7 @@ impl Connection {
             // .set_extra_info()
             .set_function(Some(scalar_func::<S>));
         for ty in S::parameters().unwrap_or_default() {
+            println!("Adding parameter {:?}", ty);
             scalar_function.add_parameter(&ty);
         }
         self.db.borrow_mut().register_scalar_function(scalar_function)
@@ -264,8 +273,10 @@ mod test {
     use crate::core::Inserter;
     use core::panic;
     use std::{
+        borrow::Cow,
         error::Error,
-        ffi::{c_char, CString},
+        ffi::{c_char, CStr, CString},
+        marker::PhantomData,
     };
 
     #[repr(C)]
@@ -391,6 +402,69 @@ mod test {
         }
     }
 
+    // Alternative simplified version if you're sure about the input
+    fn c_str_to_string_unchecked<'a>(c_str: *const c_char) -> std::borrow::Cow<'a, str> {
+        unsafe { CStr::from_ptr(c_str).to_string_lossy() }
+    }
+
+    // Add a lifetime parameter and PhantomData to tie it to that lifetime
+    struct DuckString<'a> {
+        ptr: *mut duckdb_string_t,
+        _phantom: PhantomData<&'a mut duckdb_string_t>,
+    }
+
+    impl<'a> DuckString<'a> {
+        fn new(ptr: *mut duckdb_string_t) -> Self {
+            DuckString {
+                ptr,
+                _phantom: PhantomData,
+            }
+        }
+    }
+
+    impl<'a> DuckString<'a> {
+        fn as_str(&self) -> std::borrow::Cow<'a, str> {
+            unsafe { CStr::from_ptr(duckdb_string_t_data(self.ptr)).to_string_lossy() }
+        }
+    }
+
+    struct Repeat {}
+
+    impl VScalar for Repeat {
+        unsafe fn func(
+            _func: &FunctionInfo,
+            input: &mut DataChunkHandle,
+            output: &mut FlatVector,
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let flat_counts = input.flat_vector(1);
+            let values = input.flat_vector(0);
+            let values = values.as_slice::<*mut duckdb_string_t>();
+            let strings = values
+                .iter()
+                .map(|ptr| DuckString::new(*ptr))
+                .map(|ptr| ptr.as_str().to_string());
+
+            let counts = flat_counts.as_slice::<i32>();
+
+            for (count, value) in counts.iter().zip(strings) {
+                output.insert(0, value.repeat((*count) as usize).as_str());
+            }
+
+            Ok(())
+        }
+
+        fn return_type() -> LogicalTypeHandle {
+            LogicalTypeHandle::from(LogicalTypeId::Varchar)
+        }
+
+        fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+            Some(vec![
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+                LogicalTypeHandle::from(LogicalTypeId::Integer),
+            ])
+        }
+    }
+
     #[test]
     fn test_table_function() -> Result<(), Box<dyn Error>> {
         let conn = Connection::open_in_memory()?;
@@ -433,10 +507,42 @@ mod test {
         Ok(())
     }
 
+    #[test]
+    fn test_repeat() -> Result<(), Box<dyn Error>> {
+        let conn = Connection::open_in_memory()?;
+        conn.register_scalar_function::<Repeat>("nobie_repeat")?;
+        // conn.register_scalar_function::<SomeTestFunction>("hello")?;
+
+        let val = conn.query_row("select repeat('hello', 3) as hello", [], |row| {
+            <(String,)>::try_from(row)
+        })?;
+
+        let batches = conn
+            .prepare("select repeat('there', 10) as hello from range(10)")?
+            .query_arrow([])?
+            .collect::<Vec<_>>();
+
+        print_batches(&batches)?;
+
+        // Ok(())
+
+        // let val = conn.query_row("select hello() as hello", [], |row| <(String,)>::try_from(row))?;
+        // assert_eq!(val, ("hello".to_string(),));
+
+        // let batches = conn
+        //     .prepare("select hello() as hello from range(10)")?
+        //     .query_arrow([])?
+        //     .collect::<Vec<_>>();
+
+        // print_batches(&batches)?;
+
+        Ok(())
+    }
+
     use ::arrow::util::pretty::print_batches;
     #[cfg(feature = "vtab-loadable")]
     use duckdb_loadable_macros::duckdb_entrypoint;
-    use libduckdb_sys::{duckdb_result_arrow_array, duckdb_string_t};
+    use libduckdb_sys::{duckdb_result_arrow_array, duckdb_string_t, duckdb_string_t_data};
 
     // this function is never called, but is still type checked
     // Exposes a extern C function named "libhello_ext_init" in the compiled dynamic library,
