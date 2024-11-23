@@ -246,21 +246,12 @@ pub fn flat_vector_to_arrow_array_data(vector: &FlatVector) -> Result<Arc<dyn Ar
 
 // converts a `DataChunk` to arrow `RecordBatch`
 pub fn data_chunk_to_arrow(chunk: &DataChunkHandle) -> Result<RecordBatch, Box<dyn std::error::Error>> {
-    let mut columns = vec![];
-    let mut schema = SchemaBuilder::new();
-    for i in 0..chunk.num_columns() {
+    Ok(RecordBatch::try_from_iter((0..chunk.num_columns()).map(|i| {
         let vector = chunk.flat_vector(i);
-        let array_data = flat_vector_to_arrow_array_data(&vector)?;
-        let nullable = array_data.null_count() == 0;
-        let data_type = array_data.data_type();
-        schema.push(Field::new(&i.to_string(), data_type.clone(), nullable));
+        let array_data = flat_vector_to_arrow_array_data(&vector).expect("should always convert");
         let array: Arc<dyn Array> = Arc::new(array_data);
-        columns.push(array);
-    }
-
-    let schema = schema.finish();
-
-    Ok(RecordBatch::try_new(schema.into(), columns)?)
+        (i.to_string(), array)
+    }))?)
 }
 
 /// Converts a `RecordBatch` to a `DataChunk` in the DuckDB format.
