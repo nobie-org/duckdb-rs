@@ -439,13 +439,8 @@ mod test {
             let flat_counts = input.flat_vector(1);
             let values = input.flat_vector(0);
             let values = values.as_slice::<*mut duckdb_string_t>();
-            let strings = values
-                .iter()
-                .map(|ptr| DuckString::new(*ptr))
-                .map(|ptr| ptr.as_str().to_string());
-
+            let strings = values.iter().map(|ptr| DuckString::new(*ptr).as_str());
             let counts = flat_counts.as_slice::<i32>();
-
             for (count, value) in counts.iter().zip(strings) {
                 output.insert(0, value.repeat((*count) as usize).as_str());
             }
@@ -511,30 +506,13 @@ mod test {
     fn test_repeat() -> Result<(), Box<dyn Error>> {
         let conn = Connection::open_in_memory()?;
         conn.register_scalar_function::<Repeat>("nobie_repeat")?;
-        // conn.register_scalar_function::<SomeTestFunction>("hello")?;
-
-        let val = conn.query_row("select repeat('hello', 3) as hello", [], |row| {
-            <(String,)>::try_from(row)
-        })?;
 
         let batches = conn
-            .prepare("select repeat('there', 10) as hello from range(10)")?
+            .prepare("select repeat('Ho ho ho, it's holiday season 🎄🎄', 10) as hello from range(10)")?
             .query_arrow([])?
             .collect::<Vec<_>>();
 
         print_batches(&batches)?;
-
-        // Ok(())
-
-        // let val = conn.query_row("select hello() as hello", [], |row| <(String,)>::try_from(row))?;
-        // assert_eq!(val, ("hello".to_string(),));
-
-        // let batches = conn
-        //     .prepare("select hello() as hello from range(10)")?
-        //     .query_arrow([])?
-        //     .collect::<Vec<_>>();
-
-        // print_batches(&batches)?;
 
         Ok(())
     }
