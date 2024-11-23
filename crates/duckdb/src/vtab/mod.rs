@@ -508,7 +508,7 @@ mod test {
         conn.register_scalar_function::<Repeat>("nobie_repeat")?;
 
         let batches = conn
-            .prepare("select repeat('Ho ho ho, it's holiday season 🎄🎄', 10) as hello from range(10)")?
+            .prepare("select repeat('Ho ho ho, it is holiday season 🎄🎄', 10) as message from range(8)")?
             .query_arrow([])?
             .collect::<Vec<_>>();
 
