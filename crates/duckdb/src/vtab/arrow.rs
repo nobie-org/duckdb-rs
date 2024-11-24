@@ -11,10 +11,10 @@ use crate::core::{ArrayVector, FlatVector, Inserter, ListVector, StructVector, V
 use arrow::{
     array::{
         as_boolean_array, as_generic_binary_array, as_large_list_array, as_list_array, as_primitive_array,
-        as_string_array, as_struct_array, Array, ArrayData, AsArray, BinaryArray, BooleanArray, Decimal128Array,
-        FixedSizeBinaryArray, FixedSizeListArray, GenericListArray, GenericStringArray, IntervalMonthDayNanoArray,
-        LargeBinaryArray, LargeStringArray, OffsetSizeTrait, PrimitiveArray, StringArray, StructArray,
-        TimestampMicrosecondArray,
+        as_string_array, as_struct_array, Array, ArrayData, AsArray, BinaryArray, BooleanArray, Date32Array,
+        Decimal128Array, Decimal256Array, FixedSizeBinaryArray, FixedSizeListArray, GenericBinaryBuilder,
+        GenericByteBuilder, GenericListArray, GenericStringArray, IntervalMonthDayNanoArray, LargeBinaryArray,
+        LargeStringArray, OffsetSizeTrait, PrimitiveArray, StringArray, StructArray, TimestampMicrosecondArray,
     },
     buffer::{BooleanBuffer, Buffer, NullBuffer},
     compute::cast,
@@ -27,7 +27,8 @@ use arrow::{
 };
 
 use libduckdb_sys::{
-    duckdb_from_timestamp, duckdb_string_t, duckdb_string_t_data, duckdb_time, duckdb_timestamp, duckdb_vector,
+    duckdb_date, duckdb_from_timestamp, duckdb_hugeint, duckdb_string_t, duckdb_string_t_data, duckdb_time,
+    duckdb_timestamp, duckdb_vector,
 };
 use num::{cast::AsPrimitive, ToPrimitive};
 
@@ -250,16 +251,23 @@ impl<'a> DuckString<'a> {
     }
 }
 
-fn c_char_to_cow(c_str: *const c_char) -> Cow<'static, str> {
-    // Safety: Ensure the pointer is valid and points to a null-terminated string
-    unsafe { CStr::from_ptr(c_str).to_string_lossy() }
-}
-
 impl<'a> DuckString<'a> {
     /// convert duckdb_string_t to a copy on write string
     pub fn as_str(&mut self) -> std::borrow::Cow<'a, str> {
-        c_char_to_cow(unsafe { duckdb_string_t_data(self.ptr) })
+        unsafe { CStr::from_ptr(duckdb_string_t_data(self.ptr)).to_string_lossy() }
     }
+
+    /// convert duckdb_string_t to a byte slice
+    pub fn as_bytes(&mut self) -> &[u8] {
+        // Safety: duckdb_string_t_data returns a pointer to the start of the string
+        // and duckdb_string_t.len returns the length of the string
+        unsafe {
+            let data = duckdb_string_t_data(self.ptr);
+            CStr::from_ptr(data).to_bytes()
+        }
+    }
+
+    // pub fn
 }
 
 /// Converts flat vector to an arrow array
@@ -278,7 +286,10 @@ pub fn flat_vector_to_arrow_array(
                 }))),
             )))
         }
-        LogicalTypeId::Timestamp => {
+        LogicalTypeId::Timestamp
+        | LogicalTypeId::TimestampMs
+        | LogicalTypeId::TimestampS
+        | LogicalTypeId::TimestampTZ => {
             let data = vector.as_slice_with_len::<duckdb_timestamp>(len);
             let micros = data.iter().map(|duckdb_timestamp { micros }| *micros);
             let structs = TimestampMicrosecondArray::from_iter_values_with_nulls(
@@ -298,9 +309,7 @@ pub fn flat_vector_to_arrow_array(
                     None
                 } else {
                     let mut ptr = *s;
-                    let s = DuckString::new(&mut ptr).as_str();
-
-                    Some(s.to_string())
+                    Some(DuckString::new(&mut ptr).as_str().to_string())
                 }
             });
 
@@ -325,6 +334,80 @@ pub fn flat_vector_to_arrow_array(
                     !vector.row_is_null(row as u64)
                 }))),
             )))
+        }
+        LogicalTypeId::Double => {
+            let data = vector.as_slice_with_len::<f64>(len);
+
+            Ok(Arc::new(PrimitiveArray::<Float64Type>::from_iter_values_with_nulls(
+                data.iter().copied(),
+                Some(NullBuffer::new(BooleanBuffer::collect_bool(data.len(), |row| {
+                    !vector.row_is_null(row as u64)
+                }))),
+            )))
+        }
+        LogicalTypeId::Date => {
+            let data = vector.as_slice_with_len::<duckdb_date>(len);
+
+            Ok(Arc::new(Date32Array::from_iter_values_with_nulls(
+                data.iter().map(|duckdb_date { days }| *days),
+                Some(NullBuffer::new(BooleanBuffer::collect_bool(data.len(), |row| {
+                    !vector.row_is_null(row as u64)
+                }))),
+            )))
+        }
+        LogicalTypeId::Time => {
+            let data = vector.as_slice_with_len::<duckdb_time>(len);
+
+            Ok(Arc::new(
+                PrimitiveArray::<Time64MicrosecondType>::from_iter_values_with_nulls(
+                    data.iter().map(|duckdb_time { micros }| *micros),
+                    Some(NullBuffer::new(BooleanBuffer::collect_bool(data.len(), |row| {
+                        !vector.row_is_null(row as u64)
+                    }))),
+                ),
+            ))
+        }
+        LogicalTypeId::Smallint => {
+            let data = vector.as_slice_with_len::<i16>(len);
+
+            Ok(Arc::new(PrimitiveArray::<Int16Type>::from_iter_values_with_nulls(
+                data.iter().copied(),
+                Some(NullBuffer::new(BooleanBuffer::collect_bool(data.len(), |row| {
+                    !vector.row_is_null(row as u64)
+                }))),
+            )))
+        }
+        LogicalTypeId::USmallint => {
+            let data = vector.as_slice_with_len::<u16>(len);
+
+            Ok(Arc::new(PrimitiveArray::<UInt16Type>::from_iter_values_with_nulls(
+                data.iter().copied(),
+                Some(NullBuffer::new(BooleanBuffer::collect_bool(data.len(), |row| {
+                    !vector.row_is_null(row as u64)
+                }))),
+            )))
+        }
+        LogicalTypeId::Blob => {
+            let mut data = vector.as_slice_with_len::<duckdb_string_t>(len).to_vec();
+
+            let duck_strings = data.iter_mut().enumerate().map(|(i, ptr)| {
+                if vector.row_is_null(i as u64) {
+                    None
+                } else {
+                    Some(DuckString::new(ptr))
+                }
+            });
+
+            let mut builder = GenericBinaryBuilder::<i32>::new();
+            for s in duck_strings {
+                if let Some(mut s) = s {
+                    builder.append_value(s.as_bytes());
+                } else {
+                    builder.append_null();
+                }
+            }
+
+            Ok(Arc::new(builder.finish()))
         }
         t => todo!("flat_vector_to_arrow_array: {:?}", t),
     }
