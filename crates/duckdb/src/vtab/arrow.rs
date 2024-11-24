@@ -271,6 +271,7 @@ impl<'a> DuckString<'a> {
     // pub fn
 }
 
+// FIXME: flat vectors don't have all of thsese types. I think they only
 /// Converts flat vector to an arrow array
 pub fn flat_vector_to_arrow_array(
     vector: &mut FlatVector,
