@@ -15,6 +15,7 @@ use arrow::{
         Decimal128Array, Decimal256Array, FixedSizeBinaryArray, FixedSizeListArray, GenericBinaryBuilder,
         GenericByteBuilder, GenericListArray, GenericStringArray, IntervalMonthDayNanoArray, LargeBinaryArray,
         LargeStringArray, OffsetSizeTrait, PrimitiveArray, StringArray, StructArray, TimestampMicrosecondArray,
+        TimestampNanosecondArray,
     },
     buffer::{BooleanBuffer, Buffer, NullBuffer},
     compute::cast,
@@ -27,8 +28,8 @@ use arrow::{
 };
 
 use libduckdb_sys::{
-    duckdb_date, duckdb_from_timestamp, duckdb_hugeint, duckdb_string_t, duckdb_string_t_data, duckdb_time,
-    duckdb_timestamp, duckdb_vector,
+    duckdb_date, duckdb_from_timestamp, duckdb_hugeint, duckdb_interval, duckdb_string_t, duckdb_string_t_data,
+    duckdb_time, duckdb_timestamp, duckdb_vector,
 };
 use num::{cast::AsPrimitive, ToPrimitive};
 
@@ -275,7 +276,8 @@ pub fn flat_vector_to_arrow_array(
     vector: &mut FlatVector,
     len: usize,
 ) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
-    match vector.logical_type().id() {
+    let type_id = vector.logical_type().id();
+    match type_id {
         LogicalTypeId::Integer => {
             let data = vector.as_slice_with_len::<i32>(len);
 
@@ -429,7 +431,78 @@ pub fn flat_vector_to_arrow_array(
                 }))),
             )))
         }
-        t => todo!("flat_vector_to_arrow_array: {:?}", t),
+        LogicalTypeId::UBigint => {
+            let data = vector.as_slice_with_len::<u64>(len);
+
+            Ok(Arc::new(PrimitiveArray::<UInt64Type>::from_iter_values_with_nulls(
+                data.iter().copied(),
+                Some(NullBuffer::new(BooleanBuffer::collect_bool(data.len(), |row| {
+                    !vector.row_is_null(row as u64)
+                }))),
+            )))
+        }
+        LogicalTypeId::UTinyint => {
+            let data = vector.as_slice_with_len::<u8>(len);
+
+            Ok(Arc::new(PrimitiveArray::<UInt8Type>::from_iter_values_with_nulls(
+                data.iter().copied(),
+                Some(NullBuffer::new(BooleanBuffer::collect_bool(data.len(), |row| {
+                    !vector.row_is_null(row as u64)
+                }))),
+            )))
+        }
+        LogicalTypeId::UInteger => {
+            let data = vector.as_slice_with_len::<u32>(len);
+
+            Ok(Arc::new(PrimitiveArray::<UInt32Type>::from_iter_values_with_nulls(
+                data.iter().copied(),
+                Some(NullBuffer::new(BooleanBuffer::collect_bool(data.len(), |row| {
+                    !vector.row_is_null(row as u64)
+                }))),
+            )))
+        }
+        LogicalTypeId::TimestampNs => {
+            // even nano second precision is stored in micros when using the c api
+            let data = vector.as_slice_with_len::<duckdb_timestamp>(len);
+            let nanos = data.iter().map(|duckdb_timestamp { micros }| *micros * 1000);
+            let structs = TimestampNanosecondArray::from_iter_values_with_nulls(
+                nanos,
+                Some(NullBuffer::new(BooleanBuffer::collect_bool(data.len(), |row| {
+                    !vector.row_is_null(row as u64)
+                }))),
+            );
+
+            Ok(Arc::new(structs))
+        }
+        LogicalTypeId::Struct => {
+            todo!()
+        }
+        LogicalTypeId::Decimal => {
+            todo!()
+        }
+        LogicalTypeId::Map => {
+            todo!()
+        }
+        LogicalTypeId::List => {
+            todo!()
+        }
+        LogicalTypeId::Union => {
+            todo!()
+        }
+        LogicalTypeId::Interval => {
+            let _data = vector.as_slice_with_len::<duckdb_interval>(len);
+            todo!()
+        }
+        LogicalTypeId::Hugeint => {
+            let _data = vector.as_slice_with_len::<duckdb_hugeint>(len);
+            todo!()
+        }
+        LogicalTypeId::Enum => {
+            todo!()
+        }
+        LogicalTypeId::Uuid => {
+            todo!()
+        }
     }
 }
 
