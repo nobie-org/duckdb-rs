@@ -409,6 +409,26 @@ pub fn flat_vector_to_arrow_array(
 
             Ok(Arc::new(builder.finish()))
         }
+        LogicalTypeId::Tinyint => {
+            let data = vector.as_slice_with_len::<i8>(len);
+
+            Ok(Arc::new(PrimitiveArray::<Int8Type>::from_iter_values_with_nulls(
+                data.iter().copied(),
+                Some(NullBuffer::new(BooleanBuffer::collect_bool(data.len(), |row| {
+                    !vector.row_is_null(row as u64)
+                }))),
+            )))
+        }
+        LogicalTypeId::Bigint => {
+            let data = vector.as_slice_with_len::<i64>(len);
+
+            Ok(Arc::new(PrimitiveArray::<Int64Type>::from_iter_values_with_nulls(
+                data.iter().copied(),
+                Some(NullBuffer::new(BooleanBuffer::collect_bool(data.len(), |row| {
+                    !vector.row_is_null(row as u64)
+                }))),
+            )))
+        }
         t => todo!("flat_vector_to_arrow_array: {:?}", t),
     }
 }
