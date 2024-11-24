@@ -1,5 +1,10 @@
 use super::{BindInfo, DataChunkHandle, Free, FunctionInfo, InitInfo, LogicalTypeHandle, LogicalTypeId, VTab};
-use std::{ptr::null_mut, sync::Arc};
+use std::{
+    ffi::{c_char, CStr},
+    marker::PhantomData,
+    ptr::null_mut,
+    sync::Arc,
+};
 
 use crate::core::{ArrayVector, FlatVector, Inserter, ListVector, StructVector, Vector};
 use arrow::{
@@ -7,7 +12,8 @@ use arrow::{
         as_boolean_array, as_generic_binary_array, as_large_list_array, as_list_array, as_primitive_array,
         as_string_array, as_struct_array, Array, ArrayData, AsArray, BinaryArray, BooleanArray, Decimal128Array,
         FixedSizeBinaryArray, FixedSizeListArray, GenericListArray, GenericStringArray, IntervalMonthDayNanoArray,
-        LargeBinaryArray, LargeStringArray, OffsetSizeTrait, PrimitiveArray, StructArray, TimestampMicrosecondArray,
+        LargeBinaryArray, LargeStringArray, OffsetSizeTrait, PrimitiveArray, StringArray, StructArray,
+        TimestampMicrosecondArray,
     },
     buffer::{BooleanBuffer, Buffer, NullBuffer},
     compute::cast,
@@ -19,7 +25,9 @@ use arrow::{
     record_batch::RecordBatch,
 };
 
-use libduckdb_sys::{duckdb_from_timestamp, duckdb_time, duckdb_timestamp, duckdb_vector};
+use libduckdb_sys::{
+    duckdb_from_timestamp, duckdb_string_t, duckdb_string_t_data, duckdb_time, duckdb_timestamp, duckdb_vector,
+};
 use num::{cast::AsPrimitive, ToPrimitive};
 
 /// A pointer to the Arrow record batch for the table function.
@@ -230,11 +238,71 @@ pub fn to_duckdb_logical_type(data_type: &DataType) -> Result<LogicalTypeHandle,
     }
 }
 
-/// Converts flat vector to array data
-pub fn flat_vector_to_arrow_array_data(vector: &FlatVector) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+pub struct DuckStringMutPtr<'a> {
+    ptr: *mut duckdb_string_t,
+    _phantom: PhantomData<&'a mut duckdb_string_t>,
+}
+
+impl<'a> DuckStringMutPtr<'a> {
+    pub(crate) fn new(ptr: *mut duckdb_string_t) -> Self {
+        DuckStringMutPtr {
+            ptr,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<'a> DuckStringMutPtr<'a> {
+    pub fn as_str(&self) -> std::borrow::Cow<'a, str> {
+        unsafe { CStr::from_ptr(duckdb_string_t_data(self.ptr)).to_string_lossy() }
+    }
+}
+
+// Add a lifetime parameter and PhantomData to tie it to that lifetime
+pub struct DuckString<'a> {
+    ptr: duckdb_string_t,
+    _phantom: PhantomData<&'a mut duckdb_string_t>,
+}
+
+impl<'a> DuckString<'a> {
+    pub(crate) fn new(ptr: duckdb_string_t) -> Self {
+        DuckString {
+            ptr,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+fn c_char_to_string(c_str: *const c_char) -> Option<String> {
+    if c_str.is_null() {
+        return None; // Handle null pointers gracefully
+    }
+
+    // Safety: Ensure the pointer is valid and points to a null-terminated string
+    unsafe {
+        CStr::from_ptr(c_str)
+            .to_str() // Convert to &str
+            .ok() // Handle invalid UTF-8
+            .map(|s| s.to_string()) // Convert &str to String
+    }
+}
+
+impl<'a> DuckString<'a> {
+    pub fn as_str(&mut self) -> std::borrow::Cow<'a, str> {
+        let ptr: *mut _ = &mut self.ptr;
+        println!("getting string from duckdb");
+        c_char_to_string(unsafe { duckdb_string_t_data(ptr) }).unwrap().into()
+    }
+}
+
+/// Converts flat vector to an arrow array
+pub fn flat_vector_to_arrow_array(
+    vector: &FlatVector,
+    len: usize,
+) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
     match vector.logical_type().id() {
         LogicalTypeId::Integer => {
-            let data = vector.as_slice::<i32>();
+            let data = vector.as_slice_with_len::<i32>(len);
 
             Ok(Arc::new(PrimitiveArray::<Int32Type>::from_iter_values_with_nulls(
                 data.iter().copied(),
@@ -244,7 +312,7 @@ pub fn flat_vector_to_arrow_array_data(vector: &FlatVector) -> Result<Arc<dyn Ar
             )))
         }
         LogicalTypeId::Timestamp => {
-            let data = vector.as_slice::<duckdb_timestamp>();
+            let data = vector.as_slice_with_len::<duckdb_timestamp>(len);
             let micros = data.iter().map(|duckdb_timestamp { micros }| *micros);
             let structs = TimestampMicrosecondArray::from_iter_values_with_nulls(
                 micros,
@@ -255,18 +323,51 @@ pub fn flat_vector_to_arrow_array_data(vector: &FlatVector) -> Result<Arc<dyn Ar
 
             Ok(Arc::new(structs))
         }
+
+        LogicalTypeId::Varchar => {
+            println!("data type is varchar");
+            // TODO: why is this a pointer to the string?
+            let data = vector.as_slice_with_len::<duckdb_string_t>(len);
+            let duck_strings = data
+                .iter()
+                .map(|ptr| DuckString::new(*ptr).as_str())
+                .enumerate()
+                .map(|(i, s)| {
+                    println!("checking if row is null");
+                    if vector.row_is_null(i as u64) {
+                        println!("row is null");
+                        None
+                    } else {
+                        println!("row is not null");
+                        println!("got row: {}", s);
+                        Some(s.to_string())
+                    }
+                });
+
+            Ok(Arc::new(StringArray::from(duck_strings.collect::<Vec<_>>())))
+        }
         _ => panic!(),
     }
 }
 
 // converts a `DataChunk` to arrow `RecordBatch`
 pub fn data_chunk_to_arrow(chunk: &DataChunkHandle) -> Result<RecordBatch, Box<dyn std::error::Error>> {
-    Ok(RecordBatch::try_from_iter((0..chunk.num_columns()).map(|i| {
-        let vector = chunk.flat_vector(i);
-        let array_data = flat_vector_to_arrow_array_data(&vector).expect("should always convert");
-        let array: Arc<dyn Array> = Arc::new(array_data);
-        (i.to_string(), array)
-    }))?)
+    println!("getting datachunk from arrow");
+    let len = chunk.len();
+
+    let columns = (0..chunk.num_columns())
+        .map(|i| {
+            let vector = chunk.flat_vector(i);
+            println!("getting vector from arrow {}", i);
+            flat_vector_to_arrow_array(&vector, len).map(|array_data| {
+                assert_eq!(array_data.len(), chunk.len());
+                let array: Arc<dyn Array> = Arc::new(array_data);
+                (i.to_string(), array)
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(RecordBatch::try_from_iter(columns.into_iter())?)
 }
 
 trait VectorAtPosition {
@@ -321,6 +422,7 @@ pub fn write_arrow_array_to_vector(
             primitive_array_to_vector(col, &mut chunk.flat_vector())?;
         }
         DataType::Utf8 => {
+            println!("writing utf8 to string");
             string_array_to_vector(as_string_array(col.as_ref()), &mut chunk.flat_vector());
         }
         DataType::LargeUtf8 => {

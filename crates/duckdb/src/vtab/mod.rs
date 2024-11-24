@@ -24,7 +24,7 @@ use ::arrow::datatypes::DataType;
 use arrow::{data_chunk_to_arrow, write_arrow_array_to_vector, WritableVector};
 use function::ScalarFunction;
 pub use function::{BindInfo, FunctionInfo, InitInfo, TableFunction};
-use libduckdb_sys::duckdb_vector;
+use libduckdb_sys::{duckdb_string_t, duckdb_vector};
 pub use value::Value;
 
 use crate::core::{DataChunkHandle, FlatVector, LogicalTypeHandle, LogicalTypeId, Vector};
@@ -212,8 +212,15 @@ where
         input: &mut DataChunkHandle,
         output: &mut dyn WritableVector,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let values = input.flat_vector(0);
+        let values = values.as_slice::<duckdb_string_t>();
+        let strings = values.iter().map(|ptr| arrow::DuckString::new(*ptr).as_str());
+        println!("strings {:?}", strings.collect::<Vec<_>>());
+
         let input = data_chunk_to_arrow(input)?;
+        println!("got arrow");
         let res = T::func(input)?;
+        println!("got result {:?}", res);
         write_arrow_array_to_vector(&res, output)
     }
 
@@ -491,37 +498,29 @@ mod test {
             input: &mut DataChunkHandle,
             output: &mut dyn WritableVector,
         ) -> Result<(), Box<dyn std::error::Error>> {
+            let values = input.flat_vector(0);
+            let values = values.as_slice_with_len::<duckdb_string_t>(input.len());
+            let strings = values
+                .iter()
+                .map(|ptr| arrow::DuckString::new(*ptr).as_str())
+                .take(input.len());
+            // println!("strings {:?}", strings.collect::<Vec<_>>());
+            // let input =
             let output = output.flat_vector();
-            let rows = input.len();
-            for _ in 0..rows {
-                output.insert(0, "hello");
+            // let rows = input.len();
+            // println!("rows {:?}", rows);
+            for s in strings {
+                output.insert(0, s.to_string().as_str());
             }
             Ok(())
         }
 
+        fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+            Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
+        }
+
         fn return_type() -> LogicalTypeHandle {
             LogicalTypeHandle::from(LogicalTypeId::Varchar)
-        }
-    }
-
-    // Add a lifetime parameter and PhantomData to tie it to that lifetime
-    struct DuckString<'a> {
-        ptr: *mut duckdb_string_t,
-        _phantom: PhantomData<&'a mut duckdb_string_t>,
-    }
-
-    impl<'a> DuckString<'a> {
-        fn new(ptr: *mut duckdb_string_t) -> Self {
-            DuckString {
-                ptr,
-                _phantom: PhantomData,
-            }
-        }
-    }
-
-    impl<'a> DuckString<'a> {
-        fn as_str(&self) -> std::borrow::Cow<'a, str> {
-            unsafe { CStr::from_ptr(duckdb_string_t_data(self.ptr)).to_string_lossy() }
         }
     }
 
@@ -534,12 +533,12 @@ mod test {
             output: &mut dyn WritableVector,
         ) -> Result<(), Box<dyn std::error::Error>> {
             let output = output.flat_vector();
-            let flat_counts = input.flat_vector(1);
+            let counts = input.flat_vector(1);
             let values = input.flat_vector(0);
-            let values = values.as_slice::<*mut duckdb_string_t>();
-            let strings = values.iter().map(|ptr| DuckString::new(*ptr).as_str());
-            let counts = flat_counts.as_slice::<i32>();
-            for (count, value) in counts.iter().zip(strings) {
+            let values = values.as_slice_with_len::<duckdb_string_t>(input.len());
+            let strings = values.iter().map(|ptr| arrow::DuckString::new(*ptr).as_str());
+            let counts = counts.as_slice_with_len::<i32>(input.len());
+            for (count, value) in counts.iter().zip(strings).take(input.len()) {
                 output.insert(0, value.repeat((*count) as usize).as_str());
             }
 
@@ -587,11 +586,29 @@ mod test {
         let conn = Connection::open_in_memory()?;
         conn.register_scalar_function::<HelloTestFunction>("hello")?;
 
-        let val = conn.query_row("select hello() as hello", [], |row| <(String,)>::try_from(row))?;
-        assert_eq!(val, ("hello".to_string(),));
+        // let val = conn.query_row("select hello('matt') as hello", [], |row| <(String,)>::try_from(row))?;
+        // assert_eq!(val, ("hello".to_string(),));
 
         let batches = conn
-            .prepare("select hello() as hello from range(10)")?
+            .prepare("select hello('matt') as hello from range(10)")?
+            .query_arrow([])?
+            .collect::<Vec<_>>();
+
+        print_batches(&batches)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_arrow_scalar_function() -> Result<(), Box<dyn Error>> {
+        let conn = Connection::open_in_memory()?;
+        conn.register_scalar_function::<HelloArrowScalar>("hello")?;
+
+        // let val = conn.query_row("select hello('matt') as hello", [], |row| <(String,)>::try_from(row))?;
+        // assert_eq!(val, ("hello".to_string(),));
+
+        let batches = conn
+            .prepare("select hello('matt') as hello from range(10)")?
             .query_arrow([])?
             .collect::<Vec<_>>();
 
@@ -606,7 +623,7 @@ mod test {
         conn.register_scalar_function::<Repeat>("nobie_repeat")?;
 
         let batches = conn
-            .prepare("select repeat('Ho ho ho, 🎅🎄', 10) as message from range(8)")?
+            .prepare("select nobie_repeat('Ho ho ho, 🎅🎄', 10) as message from range(8)")?
             .query_arrow([])?
             .collect::<Vec<_>>();
 

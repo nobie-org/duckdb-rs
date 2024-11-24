@@ -89,6 +89,10 @@ impl FlatVector {
         unsafe { slice::from_raw_parts(self.as_mut_ptr(), self.capacity()) }
     }
 
+    pub fn as_slice_with_len<T>(&self, len: usize) -> &[T] {
+        unsafe { slice::from_raw_parts(self.as_mut_ptr(), len) }
+    }
+
     /// Returns a mutable slice of the vector
     pub fn as_mut_slice<T>(&mut self) -> &mut [T] {
         unsafe { slice::from_raw_parts_mut(self.as_mut_ptr(), self.capacity()) }
