@@ -291,7 +291,6 @@ pub fn flat_vector_to_arrow_array(
             Ok(Arc::new(structs))
         }
         LogicalTypeId::Varchar => {
-            // TODO: why is this a pointer to the string?
             let data = vector.as_slice_with_len::<duckdb_string_t>(len);
 
             let duck_strings = data.iter().enumerate().map(|(i, s)| {
