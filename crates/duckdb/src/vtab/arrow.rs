@@ -241,16 +241,12 @@ pub fn to_duckdb_logical_type(data_type: &DataType) -> Result<LogicalTypeHandle,
 
 /// Add a lifetime parameter and PhantomData to tie it to that lifetime
 pub struct DuckString<'a> {
-    ptr: duckdb_string_t,
-    _phantom: PhantomData<&'a mut duckdb_string_t>,
+    ptr: &'a mut duckdb_string_t,
 }
 
 impl<'a> DuckString<'a> {
-    pub(crate) fn new(ptr: duckdb_string_t) -> Self {
-        DuckString {
-            ptr,
-            _phantom: PhantomData,
-        }
+    pub(crate) fn new(ptr: &'a mut duckdb_string_t) -> Self {
+        DuckString { ptr }
     }
 }
 
@@ -277,20 +273,18 @@ fn c_char_to_cow(c_str: *const c_char) -> Cow<'static, str> {
 impl<'a> DuckString<'a> {
     // this was running into a lifetime issue
     pub fn as_str(&mut self) -> std::borrow::Cow<'a, str> {
-        let ptr: *mut _ = &mut self.ptr;
+        let ptr: *mut _ = self.ptr;
         let compare = c_char_to_string(unsafe { duckdb_string_t_data(ptr) }).unwrap();
         let another = c_char_to_cow(unsafe { duckdb_string_t_data(ptr) });
-        println!("compare: {}", compare);
-        println!("another: {}", another);
         assert_eq!(compare, another.to_string());
-        another.to_string().into()
+        another
         // unsafe { CStr::from_ptr(duckdb_string_t_data(ptr)).to_str().unwrap().into() }
     }
 }
 
 /// Converts flat vector to an arrow array
 pub fn flat_vector_to_arrow_array(
-    vector: &FlatVector,
+    vector: &mut FlatVector,
     len: usize,
 ) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
     match vector.logical_type().id() {
@@ -321,17 +315,16 @@ pub fn flat_vector_to_arrow_array(
             // TODO: why is this a pointer to the string?
             let data = vector.as_slice_with_len::<duckdb_string_t>(len);
 
-            let duck_strings = data
-                .iter()
-                .map(|ptr| DuckString::new(*ptr).as_str())
-                .enumerate()
-                .map(|(i, s)| {
-                    if vector.row_is_null(i as u64) {
-                        None
-                    } else {
-                        Some(s.to_string())
-                    }
-                });
+            let duck_strings = data.iter().enumerate().map(|(i, s)| {
+                if vector.row_is_null(i as u64) {
+                    None
+                } else {
+                    let mut ptr = *s;
+                    let s = DuckString::new(&mut ptr).as_str();
+
+                    Some(s.to_string())
+                }
+            });
 
             Ok(Arc::new(StringArray::from(duck_strings.collect::<Vec<_>>())))
         }
@@ -345,8 +338,8 @@ pub fn data_chunk_to_arrow(chunk: &DataChunkHandle) -> Result<RecordBatch, Box<d
 
     let columns = (0..chunk.num_columns())
         .map(|i| {
-            let vector = chunk.flat_vector(i);
-            flat_vector_to_arrow_array(&vector, len).map(|array_data| {
+            let mut vector = chunk.flat_vector(i);
+            flat_vector_to_arrow_array(&mut vector, len).map(|array_data| {
                 assert_eq!(array_data.len(), chunk.len());
                 let array: Arc<dyn Array> = Arc::new(array_data);
                 (i.to_string(), array)

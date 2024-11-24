@@ -98,6 +98,11 @@ impl FlatVector {
         unsafe { slice::from_raw_parts_mut(self.as_mut_ptr(), self.capacity()) }
     }
 
+    /// Returns a mutable slice of the vector
+    pub fn as_mut_slice_with_len<T>(&mut self, len: usize) -> &mut [T] {
+        unsafe { slice::from_raw_parts_mut(self.as_mut_ptr(), len) }
+    }
+
     /// Returns the logical type of the vector
     pub fn logical_type(&self) -> LogicalTypeHandle {
         unsafe { LogicalTypeHandle::new(duckdb_vector_get_column_type(self.ptr)) }

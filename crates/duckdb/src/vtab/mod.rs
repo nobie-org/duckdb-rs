@@ -212,15 +212,8 @@ where
         input: &mut DataChunkHandle,
         output: &mut dyn WritableVector,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let values = input.flat_vector(0);
-        let values = values.as_slice::<duckdb_string_t>();
-        let strings = values.iter().map(|ptr| arrow::DuckString::new(*ptr).as_str());
-        println!("strings {:?}", strings.collect::<Vec<_>>());
-
         let input = data_chunk_to_arrow(input)?;
-        println!("got arrow");
         let res = T::func(input)?;
-        println!("got result {:?}", res);
         write_arrow_array_to_vector(&res, output)
     }
 
@@ -494,7 +487,7 @@ mod test {
 
     impl VScalar for HelloTestFunction {
         unsafe fn func(
-            func: &FunctionInfo,
+            _func: &FunctionInfo,
             input: &mut DataChunkHandle,
             output: &mut dyn WritableVector,
         ) -> Result<(), Box<dyn std::error::Error>> {
@@ -502,7 +495,7 @@ mod test {
             let values = values.as_slice_with_len::<duckdb_string_t>(input.len());
             let strings = values
                 .iter()
-                .map(|ptr| arrow::DuckString::new(*ptr).as_str())
+                .map(|ptr| arrow::DuckString::new(&mut { *ptr }).as_str().to_string())
                 .take(input.len());
             // println!("strings {:?}", strings.collect::<Vec<_>>());
             // let input =
@@ -536,7 +529,9 @@ mod test {
             let counts = input.flat_vector(1);
             let values = input.flat_vector(0);
             let values = values.as_slice_with_len::<duckdb_string_t>(input.len());
-            let strings = values.iter().map(|ptr| arrow::DuckString::new(*ptr).as_str());
+            let strings = values
+                .iter()
+                .map(|ptr| arrow::DuckString::new(&mut { *ptr }).as_str().to_string());
             let counts = counts.as_slice_with_len::<i32>(input.len());
             for (count, value) in counts.iter().zip(strings).take(input.len()) {
                 output.insert(0, value.repeat((*count) as usize).as_str());
