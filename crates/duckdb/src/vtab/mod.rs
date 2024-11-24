@@ -1,7 +1,9 @@
+use crate::Arrow;
 use crate::{error::Error, inner_connection::InnerConnection, Connection, Result};
 
 use super::{ffi, ffi::duckdb_free};
 use std::ffi::c_void;
+use std::sync::Arc;
 
 mod function;
 mod value;
@@ -17,10 +19,15 @@ pub use self::arrow::{
 #[cfg(feature = "vtab-excel")]
 mod excel;
 
+use ::arrow::array::{Array, RecordBatch};
+use ::arrow::datatypes::DataType;
+use arrow::{data_chunk_to_arrow, write_arrow_array_to_vector, WritableVector};
+use function::ScalarFunction;
 pub use function::{BindInfo, FunctionInfo, InitInfo, TableFunction};
+use libduckdb_sys::{duckdb_string_t, duckdb_vector};
 pub use value::Value;
 
-use crate::core::{DataChunkHandle, LogicalTypeHandle, LogicalTypeId};
+use crate::core::{DataChunkHandle, FlatVector, LogicalTypeHandle, LogicalTypeId, Vector};
 use ffi::{duckdb_bind_info, duckdb_data_chunk, duckdb_function_info, duckdb_init_info};
 
 use ffi::duckdb_malloc;
@@ -156,6 +163,114 @@ where
     }
 }
 
+/// Duckdb scalar function trait
+///
+pub trait VScalar: Sized {
+    // type ExtraInfo;
+    /// The actual function
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe because it:
+    ///
+    /// - Dereferences multiple raw pointers (`func``).
+    ///
+    unsafe fn func(
+        func: &FunctionInfo,
+        input: &mut DataChunkHandle,
+        output: &mut dyn WritableVector,
+    ) -> Result<(), Box<dyn std::error::Error>>;
+    /// The parameters of the table function
+    /// default is None
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        None
+    }
+
+    /// The return type of the scalar function
+    /// default is None
+    fn return_type() -> LogicalTypeHandle;
+}
+
+/// blah
+pub trait ArrowScalar: Sized {
+    /// blah
+    fn func(input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>>;
+
+    /// blah
+    fn parameters() -> Option<Vec<DataType>>;
+
+    /// blah
+    fn return_type() -> DataType;
+}
+
+impl<T> VScalar for T
+where
+    T: ArrowScalar,
+{
+    unsafe fn func(
+        _func: &FunctionInfo,
+        input: &mut DataChunkHandle,
+        out: &mut dyn WritableVector,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let array = T::func(data_chunk_to_arrow(input)?)?;
+        write_arrow_array_to_vector(&array, out)
+    }
+
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        T::parameters().map(|v| {
+            v.into_iter()
+                .flat_map(|dt| LogicalTypeId::try_from(&dt).ok().map(Into::into))
+                .collect()
+        })
+    }
+
+    fn return_type() -> LogicalTypeHandle {
+        LogicalTypeId::try_from(&T::return_type())
+            .ok()
+            .map(Into::into)
+            .unwrap_or_else(|| LogicalTypeHandle::from(LogicalTypeId::Integer))
+    }
+}
+
+/// blah
+pub trait VScalarFlatVector: Sized {
+    // type ExtraInfo;
+    /// The actual function
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe because it:
+    ///
+    /// - Dereferences multiple raw pointers (`func``).
+    ///
+    unsafe fn func(
+        func: &FunctionInfo,
+        input: &mut DataChunkHandle,
+        output: &mut FlatVector,
+    ) -> Result<(), Box<dyn std::error::Error>>;
+    /// The parameters of the table function
+    /// default is None
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        None
+    }
+
+    /// The return type of the scalar function
+    /// default is None
+    fn return_type() -> LogicalTypeHandle;
+}
+
+unsafe extern "C" fn scalar_func<T>(info: duckdb_function_info, input: duckdb_data_chunk, mut output: duckdb_vector)
+where
+    T: VScalar,
+{
+    let info = FunctionInfo::from(info);
+    let mut input = DataChunkHandle::new_unowned(input);
+    let result = T::func(&info, &mut input, &mut output);
+    if result.is_err() {
+        info.set_error(&result.err().unwrap().to_string());
+    }
+}
+
 impl Connection {
     /// Register the given TableFunction with the current db
     #[inline]
@@ -175,6 +290,21 @@ impl Connection {
         }
         self.db.borrow_mut().register_table_function(table_function)
     }
+
+    /// Register the given ScalarFunction with the current db
+    #[inline]
+    pub fn register_scalar_function<S: VScalar>(&self, name: &str) -> Result<()> {
+        let scalar_function = ScalarFunction::default();
+        scalar_function
+            .set_name(name)
+            .set_return_type(&S::return_type())
+            // .set_extra_info()
+            .set_function(Some(scalar_func::<S>));
+        for ty in S::parameters().unwrap_or_default() {
+            scalar_function.add_parameter(&ty);
+        }
+        self.db.borrow_mut().register_scalar_function(scalar_function)
+    }
 }
 
 impl InnerConnection {
@@ -182,6 +312,17 @@ impl InnerConnection {
     pub fn register_table_function(&mut self, table_function: TableFunction) -> Result<()> {
         unsafe {
             let rc = ffi::duckdb_register_table_function(self.con, table_function.ptr);
+            if rc != ffi::DuckDBSuccess {
+                return Err(Error::DuckDBFailure(ffi::Error::new(rc), None));
+            }
+        }
+        Ok(())
+    }
+
+    /// Register the given ScalarFunction with the current db
+    pub fn register_scalar_function(&mut self, scalar_function: ScalarFunction) -> Result<()> {
+        unsafe {
+            let rc = ffi::duckdb_register_scalar_function(self.con, scalar_function.ptr);
             if rc != ffi::DuckDBSuccess {
                 return Err(Error::DuckDBFailure(ffi::Error::new(rc), None));
             }
@@ -301,6 +442,122 @@ mod test {
         }
     }
 
+    struct HelloArrowScalar {}
+
+    impl ArrowScalar for HelloArrowScalar {
+        fn func(input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+            let name = input.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+            let result = name.iter().map(|v| format!("Hello {}", v.unwrap())).collect::<Vec<_>>();
+            Ok(Arc::new(StringArray::from(result)))
+        }
+
+        fn parameters() -> Option<Vec<DataType>> {
+            Some(vec![DataType::Utf8])
+        }
+
+        fn return_type() -> DataType {
+            DataType::Utf8
+        }
+    }
+
+    struct ArrowMultiplyScalar {}
+
+    impl ArrowScalar for ArrowMultiplyScalar {
+        fn func(input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+            let a = input
+                .column(0)
+                .as_any()
+                .downcast_ref::<::arrow::array::Float32Array>()
+                .unwrap();
+
+            let b = input
+                .column(1)
+                .as_any()
+                .downcast_ref::<::arrow::array::Float32Array>()
+                .unwrap();
+
+            let result = a
+                .iter()
+                .zip(b.iter())
+                .map(|(a, b)| a.unwrap() * b.unwrap())
+                .collect::<Vec<_>>();
+            Ok(Arc::new(::arrow::array::Float32Array::from(result)))
+        }
+
+        fn parameters() -> Option<Vec<DataType>> {
+            Some(vec![DataType::Float32, DataType::Float32])
+        }
+
+        fn return_type() -> DataType {
+            DataType::Float32
+        }
+    }
+
+    struct HelloTestFunction {}
+
+    impl VScalar for HelloTestFunction {
+        unsafe fn func(
+            _func: &FunctionInfo,
+            input: &mut DataChunkHandle,
+            output: &mut dyn WritableVector,
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let values = input.flat_vector(0);
+            let values = values.as_slice_with_len::<duckdb_string_t>(input.len());
+            let strings = values
+                .iter()
+                .map(|ptr| arrow::DuckString::new(&mut { *ptr }).as_str().to_string())
+                .take(input.len());
+            let output = output.flat_vector();
+            for s in strings {
+                output.insert(0, s.to_string().as_str());
+            }
+            Ok(())
+        }
+
+        fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+            Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
+        }
+
+        fn return_type() -> LogicalTypeHandle {
+            LogicalTypeHandle::from(LogicalTypeId::Varchar)
+        }
+    }
+
+    struct Repeat {}
+
+    impl VScalar for Repeat {
+        unsafe fn func(
+            _func: &FunctionInfo,
+            input: &mut DataChunkHandle,
+            output: &mut dyn WritableVector,
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let output = output.flat_vector();
+            let counts = input.flat_vector(1);
+            let values = input.flat_vector(0);
+            let values = values.as_slice_with_len::<duckdb_string_t>(input.len());
+            let strings = values
+                .iter()
+                .map(|ptr| arrow::DuckString::new(&mut { *ptr }).as_str().to_string());
+            let counts = counts.as_slice_with_len::<i32>(input.len());
+            for (count, value) in counts.iter().zip(strings).take(input.len()) {
+                output.insert(0, value.repeat((*count) as usize).as_str());
+            }
+
+            Ok(())
+        }
+
+        fn return_type() -> LogicalTypeHandle {
+            LogicalTypeHandle::from(LogicalTypeId::Varchar)
+        }
+
+        fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+            Some(vec![
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+                LogicalTypeHandle::from(LogicalTypeId::Integer),
+            ])
+        }
+    }
+
     #[test]
     fn test_table_function() -> Result<(), Box<dyn Error>> {
         let conn = Connection::open_in_memory()?;
@@ -325,8 +582,77 @@ mod test {
         Ok(())
     }
 
+    #[test]
+    fn test_scalar_function() -> Result<(), Box<dyn Error>> {
+        let conn = Connection::open_in_memory()?;
+        conn.register_scalar_function::<HelloTestFunction>("hello")?;
+
+        // let val = conn.query_row("select hello('matt') as hello", [], |row| <(String,)>::try_from(row))?;
+        // assert_eq!(val, ("hello".to_string(),));
+
+        let batches = conn
+            .prepare("select hello('matt') as hello from range(10)")?
+            .query_arrow([])?
+            .collect::<Vec<_>>();
+
+        print_batches(&batches)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_arrow_scalar_function() -> Result<(), Box<dyn Error>> {
+        let conn = Connection::open_in_memory()?;
+        conn.register_scalar_function::<HelloArrowScalar>("hello")?;
+
+        // let val = conn.query_row("select hello('matt') as hello", [], |row| <(String,)>::try_from(row))?;
+        // assert_eq!(val, ("hello".to_string(),));
+
+        let batches = conn
+            .prepare("select hello('matt') as hello from range(10)")?
+            .query_arrow([])?
+            .collect::<Vec<_>>();
+
+        print_batches(&batches)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_arrow_scalar_multiply_function() -> Result<(), Box<dyn Error>> {
+        let conn = Connection::open_in_memory()?;
+        conn.register_scalar_function::<ArrowMultiplyScalar>("nobie_multiply")?;
+
+        let batches = conn
+            .prepare("select nobie_multiply(3.0, 2.0) as mult_result from range(10)")?
+            .query_arrow([])?
+            .collect::<Vec<_>>();
+
+        print_batches(&batches)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_repeat() -> Result<(), Box<dyn Error>> {
+        let conn = Connection::open_in_memory()?;
+        conn.register_scalar_function::<Repeat>("nobie_repeat")?;
+
+        let batches = conn
+            .prepare("select nobie_repeat('Ho ho ho, 🎅🎄', 10) as message from range(8)")?
+            .query_arrow([])?
+            .collect::<Vec<_>>();
+
+        print_batches(&batches)?;
+
+        Ok(())
+    }
+
+    use ::arrow::{array::StringArray, util::pretty::print_batches};
     #[cfg(feature = "vtab-loadable")]
     use duckdb_loadable_macros::duckdb_entrypoint;
+    use libduckdb_sys::{duckdb_result_arrow_array, duckdb_string_t, duckdb_string_t_data};
+    use num::Float;
 
     // this function is never called, but is still type checked
     // Exposes a extern C function named "libhello_ext_init" in the compiled dynamic library,
