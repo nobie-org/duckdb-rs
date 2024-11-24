@@ -1,5 +1,6 @@
 use super::{BindInfo, DataChunkHandle, Free, FunctionInfo, InitInfo, LogicalTypeHandle, LogicalTypeId, VTab};
 use std::{
+    borrow::Cow,
     ffi::{c_char, CStr},
     marker::PhantomData,
     ptr::null_mut,
@@ -238,27 +239,7 @@ pub fn to_duckdb_logical_type(data_type: &DataType) -> Result<LogicalTypeHandle,
     }
 }
 
-pub struct DuckStringMutPtr<'a> {
-    ptr: *mut duckdb_string_t,
-    _phantom: PhantomData<&'a mut duckdb_string_t>,
-}
-
-impl<'a> DuckStringMutPtr<'a> {
-    pub(crate) fn new(ptr: *mut duckdb_string_t) -> Self {
-        DuckStringMutPtr {
-            ptr,
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<'a> DuckStringMutPtr<'a> {
-    pub fn as_str(&self) -> std::borrow::Cow<'a, str> {
-        unsafe { CStr::from_ptr(duckdb_string_t_data(self.ptr)).to_string_lossy() }
-    }
-}
-
-// Add a lifetime parameter and PhantomData to tie it to that lifetime
+/// Add a lifetime parameter and PhantomData to tie it to that lifetime
 pub struct DuckString<'a> {
     ptr: duckdb_string_t,
     _phantom: PhantomData<&'a mut duckdb_string_t>,
@@ -275,6 +256,7 @@ impl<'a> DuckString<'a> {
 
 fn c_char_to_string(c_str: *const c_char) -> Option<String> {
     if c_str.is_null() {
+        println!("c_str is null");
         return None; // Handle null pointers gracefully
     }
 
@@ -287,11 +269,22 @@ fn c_char_to_string(c_str: *const c_char) -> Option<String> {
     }
 }
 
+fn c_char_to_cow(c_str: *const c_char) -> Cow<'static, str> {
+    // Safety: Ensure the pointer is valid and points to a null-terminated string
+    unsafe { CStr::from_ptr(c_str).to_string_lossy() }
+}
+
 impl<'a> DuckString<'a> {
+    // this was running into a lifetime issue
     pub fn as_str(&mut self) -> std::borrow::Cow<'a, str> {
         let ptr: *mut _ = &mut self.ptr;
-        println!("getting string from duckdb");
-        c_char_to_string(unsafe { duckdb_string_t_data(ptr) }).unwrap().into()
+        let compare = c_char_to_string(unsafe { duckdb_string_t_data(ptr) }).unwrap();
+        let another = c_char_to_cow(unsafe { duckdb_string_t_data(ptr) });
+        println!("compare: {}", compare);
+        println!("another: {}", another);
+        assert_eq!(compare, another.to_string());
+        another.to_string().into()
+        // unsafe { CStr::from_ptr(duckdb_string_t_data(ptr)).to_str().unwrap().into() }
     }
 }
 
@@ -325,21 +318,17 @@ pub fn flat_vector_to_arrow_array(
         }
 
         LogicalTypeId::Varchar => {
-            println!("data type is varchar");
             // TODO: why is this a pointer to the string?
             let data = vector.as_slice_with_len::<duckdb_string_t>(len);
+
             let duck_strings = data
                 .iter()
                 .map(|ptr| DuckString::new(*ptr).as_str())
                 .enumerate()
                 .map(|(i, s)| {
-                    println!("checking if row is null");
                     if vector.row_is_null(i as u64) {
-                        println!("row is null");
                         None
                     } else {
-                        println!("row is not null");
-                        println!("got row: {}", s);
                         Some(s.to_string())
                     }
                 });
@@ -352,13 +341,11 @@ pub fn flat_vector_to_arrow_array(
 
 // converts a `DataChunk` to arrow `RecordBatch`
 pub fn data_chunk_to_arrow(chunk: &DataChunkHandle) -> Result<RecordBatch, Box<dyn std::error::Error>> {
-    println!("getting datachunk from arrow");
     let len = chunk.len();
 
     let columns = (0..chunk.num_columns())
         .map(|i| {
             let vector = chunk.flat_vector(i);
-            println!("getting vector from arrow {}", i);
             flat_vector_to_arrow_array(&vector, len).map(|array_data| {
                 assert_eq!(array_data.len(), chunk.len());
                 let array: Arc<dyn Array> = Arc::new(array_data);
@@ -368,12 +355,6 @@ pub fn data_chunk_to_arrow(chunk: &DataChunkHandle) -> Result<RecordBatch, Box<d
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(RecordBatch::try_from_iter(columns.into_iter())?)
-}
-
-trait VectorAtPosition {
-    type Vec: WritableVector;
-
-    fn vector_at(&mut self, index: usize) -> Self::Vec;
 }
 
 struct DataChunkHandleSlice<'a> {
