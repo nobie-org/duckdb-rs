@@ -210,11 +210,10 @@ where
     unsafe fn func(
         _func: &FunctionInfo,
         input: &mut DataChunkHandle,
-        output: &mut dyn WritableVector,
+        out: &mut dyn WritableVector,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let input = data_chunk_to_arrow(input)?;
-        let res = T::func(input)?;
-        write_arrow_array_to_vector(&res, output)
+        let array = T::func(data_chunk_to_arrow(input)?)?;
+        write_arrow_array_to_vector(&array, out)
     }
 
     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
@@ -259,27 +258,6 @@ pub trait VScalarFlatVector: Sized {
     /// default is None
     fn return_type() -> LogicalTypeHandle;
 }
-
-// impl<T> VScalar for T
-// where
-//     T: VScalarFlatVector,
-// {
-//     unsafe fn func(
-//         func: &FunctionInfo,
-//         input: &mut DataChunkHandle,
-//         output: duckdb_vector,
-//     ) -> Result<(), Box<dyn std::error::Error>> {
-//         T::func(func, input, &mut FlatVector::from(output))
-//     }
-
-//     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-//         T::parameters()
-//     }
-
-//     fn return_type() -> LogicalTypeHandle {
-//         T::return_type()
-//     }
-// }
 
 unsafe extern "C" fn scalar_func<T>(info: duckdb_function_info, input: duckdb_data_chunk, mut output: duckdb_vector)
 where
@@ -359,8 +337,7 @@ mod test {
     use crate::core::Inserter;
     use std::{
         error::Error,
-        ffi::{c_char, CStr, CString},
-        marker::PhantomData,
+        ffi::{c_char, CString},
     };
 
     #[repr(C)]
@@ -480,6 +457,39 @@ mod test {
 
         fn return_type() -> DataType {
             DataType::Utf8
+        }
+    }
+
+    struct ArrowMultiplyScalar {}
+
+    impl ArrowScalar for ArrowMultiplyScalar {
+        fn func(input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+            let a = input
+                .column(0)
+                .as_any()
+                .downcast_ref::<::arrow::array::Float32Array>()
+                .unwrap();
+
+            let b = input
+                .column(1)
+                .as_any()
+                .downcast_ref::<::arrow::array::Float32Array>()
+                .unwrap();
+
+            let result = a
+                .iter()
+                .zip(b.iter())
+                .map(|(a, b)| a.unwrap() * b.unwrap())
+                .collect::<Vec<_>>();
+            Ok(Arc::new(::arrow::array::Float32Array::from(result)))
+        }
+
+        fn parameters() -> Option<Vec<DataType>> {
+            Some(vec![DataType::Float32, DataType::Float32])
+        }
+
+        fn return_type() -> DataType {
+            DataType::Float32
         }
     }
 
@@ -609,6 +619,21 @@ mod test {
     }
 
     #[test]
+    fn test_arrow_scalar_multiply_function() -> Result<(), Box<dyn Error>> {
+        let conn = Connection::open_in_memory()?;
+        conn.register_scalar_function::<ArrowMultiplyScalar>("nobie_multiply")?;
+
+        let batches = conn
+            .prepare("select nobie_multiply(3.0, 2.0) as mult_result from range(10)")?
+            .query_arrow([])?
+            .collect::<Vec<_>>();
+
+        print_batches(&batches)?;
+
+        Ok(())
+    }
+
+    #[test]
     fn test_repeat() -> Result<(), Box<dyn Error>> {
         let conn = Connection::open_in_memory()?;
         conn.register_scalar_function::<Repeat>("nobie_repeat")?;
@@ -627,6 +652,7 @@ mod test {
     #[cfg(feature = "vtab-loadable")]
     use duckdb_loadable_macros::duckdb_entrypoint;
     use libduckdb_sys::{duckdb_result_arrow_array, duckdb_string_t, duckdb_string_t_data};
+    use num::Float;
 
     // this function is never called, but is still type checked
     // Exposes a extern C function named "libhello_ext_init" in the compiled dynamic library,

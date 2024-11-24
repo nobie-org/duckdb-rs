@@ -250,35 +250,15 @@ impl<'a> DuckString<'a> {
     }
 }
 
-fn c_char_to_string(c_str: *const c_char) -> Option<String> {
-    if c_str.is_null() {
-        println!("c_str is null");
-        return None; // Handle null pointers gracefully
-    }
-
-    // Safety: Ensure the pointer is valid and points to a null-terminated string
-    unsafe {
-        CStr::from_ptr(c_str)
-            .to_str() // Convert to &str
-            .ok() // Handle invalid UTF-8
-            .map(|s| s.to_string()) // Convert &str to String
-    }
-}
-
 fn c_char_to_cow(c_str: *const c_char) -> Cow<'static, str> {
     // Safety: Ensure the pointer is valid and points to a null-terminated string
     unsafe { CStr::from_ptr(c_str).to_string_lossy() }
 }
 
 impl<'a> DuckString<'a> {
-    // this was running into a lifetime issue
+    /// convert duckdb_string_t to a copy on write string
     pub fn as_str(&mut self) -> std::borrow::Cow<'a, str> {
-        let ptr: *mut _ = self.ptr;
-        let compare = c_char_to_string(unsafe { duckdb_string_t_data(ptr) }).unwrap();
-        let another = c_char_to_cow(unsafe { duckdb_string_t_data(ptr) });
-        assert_eq!(compare, another.to_string());
-        another
-        // unsafe { CStr::from_ptr(duckdb_string_t_data(ptr)).to_str().unwrap().into() }
+        c_char_to_cow(unsafe { duckdb_string_t_data(self.ptr) })
     }
 }
 
@@ -294,7 +274,7 @@ pub fn flat_vector_to_arrow_array(
             Ok(Arc::new(PrimitiveArray::<Int32Type>::from_iter_values_with_nulls(
                 data.iter().copied(),
                 Some(NullBuffer::new(BooleanBuffer::collect_bool(data.len(), |row| {
-                    vector.row_is_null(row as u64)
+                    !vector.row_is_null(row as u64)
                 }))),
             )))
         }
@@ -304,13 +284,12 @@ pub fn flat_vector_to_arrow_array(
             let structs = TimestampMicrosecondArray::from_iter_values_with_nulls(
                 micros,
                 Some(NullBuffer::new(BooleanBuffer::collect_bool(data.len(), |row| {
-                    vector.row_is_null(row as u64)
+                    !vector.row_is_null(row as u64)
                 }))),
             );
 
             Ok(Arc::new(structs))
         }
-
         LogicalTypeId::Varchar => {
             // TODO: why is this a pointer to the string?
             let data = vector.as_slice_with_len::<duckdb_string_t>(len);
@@ -328,11 +307,31 @@ pub fn flat_vector_to_arrow_array(
 
             Ok(Arc::new(StringArray::from(duck_strings.collect::<Vec<_>>())))
         }
-        _ => panic!(),
+        LogicalTypeId::Boolean => {
+            let data = vector.as_slice_with_len::<bool>(len);
+
+            Ok(Arc::new(BooleanArray::new(
+                BooleanBuffer::from_iter(data.iter().copied()),
+                Some(NullBuffer::new(BooleanBuffer::collect_bool(data.len(), |row| {
+                    !vector.row_is_null(row as u64)
+                }))),
+            )))
+        }
+        LogicalTypeId::Float => {
+            let data = vector.as_slice_with_len::<f32>(len);
+
+            Ok(Arc::new(PrimitiveArray::<Float32Type>::from_iter_values_with_nulls(
+                data.iter().copied(),
+                Some(NullBuffer::new(BooleanBuffer::collect_bool(data.len(), |row| {
+                    !vector.row_is_null(row as u64)
+                }))),
+            )))
+        }
+        t => todo!("flat_vector_to_arrow_array: {:?}", t),
     }
 }
 
-// converts a `DataChunk` to arrow `RecordBatch`
+/// converts a `DataChunk` to arrow `RecordBatch`
 pub fn data_chunk_to_arrow(chunk: &DataChunkHandle) -> Result<RecordBatch, Box<dyn std::error::Error>> {
     let len = chunk.len();
 
