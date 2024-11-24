@@ -497,11 +497,7 @@ mod test {
                 .iter()
                 .map(|ptr| arrow::DuckString::new(&mut { *ptr }).as_str().to_string())
                 .take(input.len());
-            // println!("strings {:?}", strings.collect::<Vec<_>>());
-            // let input =
             let output = output.flat_vector();
-            // let rows = input.len();
-            // println!("rows {:?}", rows);
             for s in strings {
                 output.insert(0, s.to_string().as_str());
             }
