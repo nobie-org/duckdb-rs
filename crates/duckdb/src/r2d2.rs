@@ -79,6 +79,12 @@ impl DuckdbConnectionManager {
         })
     }
 
+    /// Register a table function.
+    pub fn register_table_function<T: crate::vtab::VTab>(&self, name: &str) -> Result<()> {
+        let conn = self.connection.lock().unwrap();
+        conn.register_table_function::<T>(name)
+    }
+
     /// Register a scalar function.
     pub fn register_scalar<S: VScalar>(&self, name: &str) -> Result<()> {
         let conn = self.connection.lock().unwrap();
