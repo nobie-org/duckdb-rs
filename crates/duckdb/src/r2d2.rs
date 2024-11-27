@@ -40,7 +40,10 @@
 //!         .unwrap()
 //! }
 //! ```
-use crate::{vtab::VScalar, Config, Connection, Error, Result};
+use crate::{
+    vtab::{VScalar, VTab},
+    Config, Connection, Error, Result,
+};
 use std::{
     path::Path,
     sync::{Arc, Mutex},
@@ -80,7 +83,7 @@ impl DuckdbConnectionManager {
     }
 
     /// Register a table function.
-    pub fn register_table_function<T: crate::vtab::VTab>(&self, name: &str) -> Result<()> {
+    pub fn register_table_function<T: VTab>(&self, name: &str) -> Result<()> {
         let conn = self.connection.lock().unwrap();
         conn.register_table_function::<T>(name)
     }
