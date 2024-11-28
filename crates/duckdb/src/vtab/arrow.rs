@@ -571,7 +571,6 @@ pub fn write_arrow_array_to_vector(
             primitive_array_to_vector(col, &mut chunk.flat_vector())?;
         }
         DataType::Utf8 => {
-            println!("writing utf8 to string");
             string_array_to_vector(as_string_array(col.as_ref()), &mut chunk.flat_vector());
         }
         DataType::LargeUtf8 => {
