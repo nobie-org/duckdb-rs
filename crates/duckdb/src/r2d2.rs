@@ -45,6 +45,7 @@ use crate::{
     Config, Connection, Error, Result,
 };
 use std::{
+    fmt::Debug,
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -89,7 +90,10 @@ impl DuckdbConnectionManager {
     }
 
     /// Register a scalar function.
-    pub fn register_scalar<S: VScalar>(&self, name: &str) -> Result<()> {
+    pub fn register_scalar<S: VScalar>(&self, name: &str) -> Result<()>
+    where
+        S::Info: Debug,
+    {
         let conn = self.connection.lock().unwrap();
         conn.register_scalar_function::<S>(name)
     }

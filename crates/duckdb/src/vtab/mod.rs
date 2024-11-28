@@ -3,6 +3,7 @@ use crate::{error::Error, inner_connection::InnerConnection, Connection, Result}
 
 use super::{ffi, ffi::duckdb_free};
 use std::ffi::c_void;
+use std::fmt::Debug;
 use std::sync::Arc;
 
 mod function;
@@ -37,7 +38,7 @@ use std::mem::size_of;
 /// used for the bind_info and init_info
 /// # Safety
 /// This function is obviously unsafe
-unsafe fn malloc_data_c<T>() -> *mut T {
+pub unsafe fn malloc_data_c<T>() -> *mut T {
     duckdb_malloc(size_of::<T>()).cast()
 }
 
@@ -46,7 +47,7 @@ unsafe fn malloc_data_c<T>() -> *mut T {
 /// # Safety
 ///   This function is obviously unsafe
 /// TODO: maybe we should use a Free trait here
-unsafe extern "C" fn drop_data_c<T: Free>(v: *mut c_void) {
+pub unsafe extern "C" fn drop_data_c<T: Free>(v: *mut c_void) {
     let actual = v.cast::<T>();
     (*actual).free();
     duckdb_free(v);
@@ -166,7 +167,8 @@ where
 /// Duckdb scalar function trait
 ///
 pub trait VScalar: Sized {
-    // type ExtraInfo;
+    /// blah
+    type Info: Default;
     /// The actual function
     ///
     /// # Safety
@@ -176,7 +178,7 @@ pub trait VScalar: Sized {
     /// - Dereferences multiple raw pointers (`func``).
     ///
     unsafe fn func(
-        func: &FunctionInfo,
+        func: &Self::Info,
         input: &mut DataChunkHandle,
         output: &mut dyn WritableVector,
     ) -> Result<(), Box<dyn std::error::Error>>;
@@ -194,7 +196,10 @@ pub trait VScalar: Sized {
 /// blah
 pub trait ArrowScalar: Sized {
     /// blah
-    fn func(input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>>;
+    type FuncInfo: Default;
+
+    /// blah
+    fn func(info: &Self::FuncInfo, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>>;
 
     /// blah
     fn parameters() -> Option<Vec<DataType>>;
@@ -206,13 +211,17 @@ pub trait ArrowScalar: Sized {
 impl<T> VScalar for T
 where
     T: ArrowScalar,
+    T::FuncInfo: Debug,
 {
+    type Info = T::FuncInfo;
+
     unsafe fn func(
-        _func: &FunctionInfo,
+        info: &Self::Info,
         input: &mut DataChunkHandle,
         out: &mut dyn WritableVector,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let array = T::func(data_chunk_to_arrow(input)?)?;
+        println!("info: {:?}", info);
+        let array = T::func(info, data_chunk_to_arrow(input)?)?;
         write_arrow_array_to_vector(&array, out)
     }
 
@@ -265,7 +274,7 @@ where
 {
     let info = FunctionInfo::from(info);
     let mut input = DataChunkHandle::new_unowned(input);
-    let result = T::func(&info, &mut input, &mut output);
+    let result = T::func(info.get_scalar_extra_info(), &mut input, &mut output);
     if result.is_err() {
         info.set_error(&result.err().unwrap().to_string());
     }
@@ -293,13 +302,16 @@ impl Connection {
 
     /// Register the given ScalarFunction with the current db
     #[inline]
-    pub fn register_scalar_function<S: VScalar>(&self, name: &str) -> Result<()> {
+    pub fn register_scalar_function<S: VScalar>(&self, name: &str) -> Result<()>
+    where
+        S::Info: Debug,
+    {
         let scalar_function = ScalarFunction::default();
         scalar_function
             .set_name(name)
             .set_return_type(&S::return_type())
-            // .set_extra_info()
-            .set_function(Some(scalar_func::<S>));
+            .set_function(Some(scalar_func::<S>))
+            .set_extra_info::<S::Info>();
         for ty in S::parameters().unwrap_or_default() {
             scalar_function.add_parameter(&ty);
         }
@@ -445,7 +457,9 @@ mod test {
     struct HelloArrowScalar {}
 
     impl ArrowScalar for HelloArrowScalar {
-        fn func(input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+        type FuncInfo = ();
+
+        fn func(info: &Self::FuncInfo, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
             let name = input.column(0).as_any().downcast_ref::<StringArray>().unwrap();
             let result = name.iter().map(|v| format!("Hello {}", v.unwrap())).collect::<Vec<_>>();
             Ok(Arc::new(StringArray::from(result)))
@@ -460,10 +474,33 @@ mod test {
         }
     }
 
+    #[derive(Debug)]
+    struct MockMeta {
+        name: String,
+    }
+
+    impl Default for MockMeta {
+        fn default() -> Self {
+            MockMeta {
+                name: "some meta".to_string(),
+            }
+        }
+    }
+
+    impl Drop for MockMeta {
+        fn drop(&mut self) {
+            println!("dropped meta");
+        }
+    }
+
     struct ArrowMultiplyScalar {}
 
     impl ArrowScalar for ArrowMultiplyScalar {
-        fn func(input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+        type FuncInfo = MockMeta;
+
+        fn func(info: &Self::FuncInfo, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+            println!("info: {:?}", info);
+
             let a = input
                 .column(0)
                 .as_any()
@@ -496,8 +533,10 @@ mod test {
     struct HelloTestFunction {}
 
     impl VScalar for HelloTestFunction {
+        type Info = ();
+
         unsafe fn func(
-            _func: &FunctionInfo,
+            _func: &Self::Info,
             input: &mut DataChunkHandle,
             output: &mut dyn WritableVector,
         ) -> Result<(), Box<dyn std::error::Error>> {
@@ -526,8 +565,10 @@ mod test {
     struct Repeat {}
 
     impl VScalar for Repeat {
+        type Info = ();
+
         unsafe fn func(
-            _func: &FunctionInfo,
+            _func: &Self::Info,
             input: &mut DataChunkHandle,
             output: &mut dyn WritableVector,
         ) -> Result<(), Box<dyn std::error::Error>> {

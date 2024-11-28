@@ -527,30 +527,30 @@ pub fn data_chunk_to_arrow(chunk: &DataChunkHandle) -> Result<RecordBatch, Box<d
 
 struct DataChunkHandleSlice<'a> {
     chunk: &'a mut DataChunkHandle,
-    index: usize,
+    column_index: usize,
 }
 
 impl<'a> DataChunkHandleSlice<'a> {
-    fn new(chunk: &'a mut DataChunkHandle, index: usize) -> Self {
-        Self { chunk, index }
+    fn new(chunk: &'a mut DataChunkHandle, column_index: usize) -> Self {
+        Self { chunk, column_index }
     }
 }
 
 impl<'a> WritableVector for DataChunkHandleSlice<'a> {
     fn array_vector(&mut self) -> ArrayVector {
-        self.chunk.array_vector(self.index)
+        self.chunk.array_vector(self.column_index)
     }
 
     fn flat_vector(&mut self) -> FlatVector {
-        self.chunk.flat_vector(self.index)
+        self.chunk.flat_vector(self.column_index)
     }
 
     fn struct_vector(&mut self) -> StructVector {
-        self.chunk.struct_vector(self.index)
+        self.chunk.struct_vector(self.column_index)
     }
 
     fn list_vector(&mut self) -> ListVector {
-        self.chunk.list_vector(self.index)
+        self.chunk.list_vector(self.column_index)
     }
 }
 

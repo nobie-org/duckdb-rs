@@ -1,7 +1,8 @@
 use libduckdb_sys::{
     duckdb_create_scalar_function, duckdb_destroy_scalar_function, duckdb_scalar_function,
-    duckdb_scalar_function_add_parameter, duckdb_scalar_function_set_extra_info, duckdb_scalar_function_set_function,
-    duckdb_scalar_function_set_name, duckdb_scalar_function_set_return_type, duckdb_vector,
+    duckdb_scalar_function_add_parameter, duckdb_scalar_function_get_extra_info, duckdb_scalar_function_set_extra_info,
+    duckdb_scalar_function_set_function, duckdb_scalar_function_set_name, duckdb_scalar_function_set_return_type,
+    duckdb_vector,
 };
 
 use super::{
@@ -19,6 +20,7 @@ use super::{
 };
 use std::{
     ffi::{c_void, CString},
+    fmt::Debug,
     os::raw::c_char,
 };
 
@@ -353,6 +355,11 @@ impl FunctionInfo {
             duckdb_function_set_error(self.0, c_str.as_ptr() as *const c_char);
         }
     }
+
+    pub unsafe fn get_scalar_extra_info<T>(&self) -> &T {
+        &*(duckdb_scalar_function_get_extra_info(self.0) as *const T)
+    }
+
     /// Gets the bind data set by [`BindInfo::set_bind_data`] during the bind.
     ///
     /// Note that the bind data should be considered as read-only.
@@ -469,8 +476,17 @@ impl ScalarFunction {
     /// * `destroy`: The callback that will be called to destroy the bind data (if any)
     ///
     /// # Safety
-    pub unsafe fn set_extra_info(&self, extra_info: *mut c_void, destroy: duckdb_delete_callback_t) {
+    unsafe fn set_extra_info_impl(&self, extra_info: *mut c_void, destroy: duckdb_delete_callback_t) {
         duckdb_scalar_function_set_extra_info(self.ptr, extra_info, destroy);
+    }
+
+    pub fn set_extra_info<T: Default + Debug>(&self) -> &ScalarFunction {
+        unsafe {
+            let t = Box::new(T::default());
+            let c_void = Box::into_raw(t) as *mut c_void;
+            self.set_extra_info_impl(c_void, Some(drop_box_allocated_c_void::<T>));
+        }
+        self
     }
 }
 
@@ -478,4 +494,8 @@ impl Default for ScalarFunction {
     fn default() -> Self {
         Self::new()
     }
+}
+
+unsafe extern "C" fn drop_box_allocated_c_void<T: Debug>(ptr: *mut c_void) {
+    let _ = Box::from_raw(ptr as *mut T);
 }
