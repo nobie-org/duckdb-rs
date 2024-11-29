@@ -402,18 +402,50 @@ impl From<duckdb_function_info> for FunctionInfo {
     }
 }
 
+pub struct ScalarFunctionSet {
+    ptr: duckdb_scalar_function_set,
+}
+
+impl ScalarFunctionSet {
+    pub fn new(name: &str) -> Self {
+        let c_name = CString::new(name).expect("name should contain valid utf-8");
+        Self {
+            ptr: unsafe { duckdb_create_scalar_function_set(c_name.as_ptr()) },
+        }
+    }
+
+    pub fn add_function(&self, func: ScalarFunction) -> crate::Result<()> {
+        unsafe {
+            let rc = duckdb_add_scalar_function_to_set(self.ptr, func.ptr);
+            if rc != DuckDBSuccess {
+                return Err(Error::DuckDBFailure(ffi::Error::new(rc), None));
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn register_with_connection(&self, con: duckdb_connection) -> crate::Result<()> {
+        unsafe {
+            let rc = ffi::duckdb_register_scalar_function_set(con, self.ptr);
+            if rc != ffi::DuckDBSuccess {
+                return Err(Error::DuckDBFailure(ffi::Error::new(rc), None));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// A function that returns a queryable scalar function
 #[derive(Debug)]
 pub struct ScalarFunction {
-    f_ptr: duckdb_scalar_function,
-    fn_set: duckdb_scalar_function_set,
-    name: String,
+    ptr: duckdb_scalar_function,
 }
 
 impl Drop for ScalarFunction {
     fn drop(&mut self) {
         unsafe {
-            duckdb_destroy_scalar_function(&mut self.f_ptr);
+            duckdb_destroy_scalar_function(&mut self.ptr);
         }
     }
 }
@@ -421,28 +453,13 @@ impl Drop for ScalarFunction {
 use libduckdb_sys as ffi;
 
 impl ScalarFunction {
-    pub(crate) fn register_with_connection(&self, con: duckdb_connection) -> crate::Result<()> {
-        unsafe {
-            let rc = duckdb_add_scalar_function_to_set(self.fn_set, self.f_ptr);
-            if rc != DuckDBSuccess {
-                return Err(Error::DuckDBFailure(ffi::Error::new(rc), None));
-            }
-
-            let rc = ffi::duckdb_register_scalar_function_set(con, self.fn_set);
-            if rc != ffi::DuckDBSuccess {
-                return Err(Error::DuckDBFailure(ffi::Error::new(rc), None));
-            }
-        }
-        Ok(())
-    }
-
     /// Adds a parameter to the scalar function.
     ///
     /// # Arguments
     ///  * `logical_type`: The type of the parameter to add.
     pub fn add_parameter(&self, logical_type: &LogicalTypeHandle) -> &Self {
         unsafe {
-            duckdb_scalar_function_add_parameter(self.f_ptr, logical_type.ptr);
+            duckdb_scalar_function_add_parameter(self.ptr, logical_type.ptr);
         }
         self
     }
@@ -453,7 +470,7 @@ impl ScalarFunction {
     ///  * `logical_type`: The return type of the scalar function.
     pub fn set_return_type(&self, logical_type: &LogicalTypeHandle) -> &Self {
         unsafe {
-            duckdb_scalar_function_set_return_type(self.f_ptr, logical_type.ptr);
+            duckdb_scalar_function_set_return_type(self.ptr, logical_type.ptr);
         }
         self
     }
@@ -467,7 +484,7 @@ impl ScalarFunction {
         func: Option<unsafe extern "C" fn(info: duckdb_function_info, input: duckdb_data_chunk, output: duckdb_vector)>,
     ) -> &Self {
         unsafe {
-            duckdb_scalar_function_set_function(self.f_ptr, func);
+            duckdb_scalar_function_set_function(self.ptr, func);
         }
         self
     }
@@ -476,13 +493,10 @@ impl ScalarFunction {
     pub fn new(name: impl Into<String>) -> Result<Self, Error> {
         let name: String = name.into();
         let f_ptr = unsafe { duckdb_create_scalar_function() };
-        let fn_set = unsafe {
-            let c_name = CString::from_vec_unchecked(name.as_bytes().into());
-            duckdb_scalar_function_set_name(f_ptr, c_name.as_ptr());
-            duckdb_create_scalar_function_set(c_name.as_ptr())
-        };
+        let c_name = CString::new(name).expect("name should contain valid utf-8");
+        unsafe { duckdb_scalar_function_set_name(f_ptr, c_name.as_ptr()) };
 
-        Ok(Self { f_ptr, name, fn_set })
+        Ok(Self { ptr: f_ptr })
     }
 
     /// Assigns extra information to the scalar function that can be fetched during binding, etc.
@@ -493,7 +507,7 @@ impl ScalarFunction {
     ///
     /// # Safety
     unsafe fn set_extra_info_impl(&self, extra_info: *mut c_void, destroy: duckdb_delete_callback_t) {
-        duckdb_scalar_function_set_extra_info(self.f_ptr, extra_info, destroy);
+        duckdb_scalar_function_set_extra_info(self.ptr, extra_info, destroy);
     }
 
     pub fn set_extra_info<T: Default + Debug>(&self) -> &ScalarFunction {

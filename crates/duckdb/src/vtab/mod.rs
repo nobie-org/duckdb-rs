@@ -23,8 +23,8 @@ mod excel;
 use ::arrow::array::{Array, RecordBatch};
 use ::arrow::datatypes::DataType;
 use arrow::{data_chunk_to_arrow, write_arrow_array_to_vector, WritableVector};
-use function::ScalarFunction;
 pub use function::{BindInfo, FunctionInfo, InitInfo, TableFunction};
+use function::{ScalarFunction, ScalarFunctionSet};
 use libduckdb_sys::{duckdb_string_t, duckdb_vector};
 pub use value::Value;
 
@@ -314,7 +314,9 @@ impl Connection {
         for ty in S::parameters().unwrap_or_default() {
             scalar_function.add_parameter(&ty);
         }
-        self.db.borrow_mut().register_scalar_function(scalar_function)
+        let set = ScalarFunctionSet::new(name);
+        set.add_function(scalar_function)?;
+        self.db.borrow_mut().register_scalar_function_set(set)
     }
 }
 
@@ -331,7 +333,7 @@ impl InnerConnection {
     }
 
     /// Register the given ScalarFunction with the current db
-    pub fn register_scalar_function(&mut self, f: ScalarFunction) -> Result<()> {
+    pub fn register_scalar_function_set(&mut self, f: ScalarFunctionSet) -> Result<()> {
         f.register_with_connection(self.con)
     }
 }
