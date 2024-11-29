@@ -306,9 +306,8 @@ impl Connection {
     where
         S::Info: Debug,
     {
-        let scalar_function = ScalarFunction::default();
+        let scalar_function = ScalarFunction::new(name)?;
         scalar_function
-            .set_name(name)
             .set_return_type(&S::return_type())
             .set_function(Some(scalar_func::<S>))
             .set_extra_info::<S::Info>();
@@ -332,14 +331,8 @@ impl InnerConnection {
     }
 
     /// Register the given ScalarFunction with the current db
-    pub fn register_scalar_function(&mut self, scalar_function: ScalarFunction) -> Result<()> {
-        unsafe {
-            let rc = ffi::duckdb_register_scalar_function(self.con, scalar_function.ptr);
-            if rc != ffi::DuckDBSuccess {
-                return Err(Error::DuckDBFailure(ffi::Error::new(rc), None));
-            }
-        }
-        Ok(())
+    pub fn register_scalar_function(&mut self, f: ScalarFunction) -> Result<()> {
+        f.register_with_connection(self.con)
     }
 }
 
