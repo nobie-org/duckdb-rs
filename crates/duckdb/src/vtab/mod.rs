@@ -164,7 +164,8 @@ where
     }
 }
 
-struct ScalarFunctionSignature {
+/// Duckdb scalar function signature
+pub struct ScalarFunctionSignature {
     parameters: Option<Vec<LogicalTypeHandle>>,
     return_type: LogicalTypeHandle,
 }
@@ -212,7 +213,7 @@ pub trait VScalar: Sized {
     // fn return_type() -> LogicalTypeHandle;
 }
 
-struct ArrowFunctionSignature {
+pub struct ArrowFunctionSignature {
     pub parameters: Option<Vec<DataType>>,
     pub return_type: DataType,
 }
