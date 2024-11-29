@@ -164,6 +164,21 @@ where
     }
 }
 
+struct ScalarFunctionSignature {
+    parameters: Option<Vec<LogicalTypeHandle>>,
+    return_type: LogicalTypeHandle,
+}
+
+impl ScalarFunctionSignature {
+    fn register_with_scalar(&self, f: &ScalarFunction) {
+        f.set_return_type(&self.return_type);
+
+        for param in self.parameters.iter().flatten() {
+            f.add_parameter(param);
+        }
+    }
+}
+
 /// Duckdb scalar function trait
 ///
 pub trait VScalar: Sized {
@@ -182,15 +197,24 @@ pub trait VScalar: Sized {
         input: &mut DataChunkHandle,
         output: &mut dyn WritableVector,
     ) -> Result<(), Box<dyn std::error::Error>>;
-    /// The parameters of the table function
-    /// default is None
-    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-        None
-    }
 
-    /// The return type of the scalar function
-    /// default is None
-    fn return_type() -> LogicalTypeHandle;
+    /// The possible signatures of the scalar function
+    fn signatures() -> Vec<ScalarFunctionSignature>;
+
+    // /// The parameters of the table function
+    // /// default is None
+    // fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+    //     None
+    // }
+
+    // /// The return type of the scalar function
+    // /// default is None
+    // fn return_type() -> LogicalTypeHandle;
+}
+
+struct ArrowFunctionSignature {
+    pub parameters: Option<Vec<DataType>>,
+    pub return_type: DataType,
 }
 
 /// blah
@@ -201,11 +225,7 @@ pub trait ArrowScalar: Sized {
     /// blah
     fn func(info: &Self::FuncInfo, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>>;
 
-    /// blah
-    fn parameters() -> Option<Vec<DataType>>;
-
-    /// blah
-    fn return_type() -> DataType;
+    fn signatures() -> Vec<ArrowFunctionSignature>;
 }
 
 impl<T> VScalar for T
@@ -225,19 +245,21 @@ where
         write_arrow_array_to_vector(&array, out)
     }
 
-    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-        T::parameters().map(|v| {
-            v.into_iter()
-                .flat_map(|dt| LogicalTypeId::try_from(&dt).ok().map(Into::into))
-                .collect()
-        })
-    }
-
-    fn return_type() -> LogicalTypeHandle {
-        LogicalTypeId::try_from(&T::return_type())
-            .ok()
-            .map(Into::into)
-            .unwrap_or_else(|| LogicalTypeHandle::from(LogicalTypeId::Integer))
+    fn signatures() -> Vec<ScalarFunctionSignature> {
+        T::signatures()
+            .into_iter()
+            .map(|sig| ScalarFunctionSignature {
+                parameters: sig.parameters.map(|v| {
+                    v.into_iter()
+                        .flat_map(|dt| LogicalTypeId::try_from(&dt).ok().map(Into::into))
+                        .collect()
+                }),
+                return_type: LogicalTypeId::try_from(&sig.return_type)
+                    .ok()
+                    .map(Into::into)
+                    .unwrap_or_else(|| LogicalTypeHandle::from(LogicalTypeId::Integer)),
+            })
+            .collect()
     }
 }
 
@@ -306,16 +328,14 @@ impl Connection {
     where
         S::Info: Debug,
     {
-        let scalar_function = ScalarFunction::new(name)?;
-        scalar_function
-            .set_return_type(&S::return_type())
-            .set_function(Some(scalar_func::<S>))
-            .set_extra_info::<S::Info>();
-        for ty in S::parameters().unwrap_or_default() {
-            scalar_function.add_parameter(&ty);
-        }
         let set = ScalarFunctionSet::new(name);
-        set.add_function(scalar_function)?;
+        for signature in S::signatures() {
+            let scalar_function = ScalarFunction::new(name)?;
+            signature.register_with_scalar(&scalar_function);
+            scalar_function.set_function(Some(scalar_func::<S>));
+            scalar_function.set_extra_info::<S::Info>();
+            set.add_function(scalar_function)?;
+        }
         self.db.borrow_mut().register_scalar_function_set(set)
     }
 }
@@ -460,12 +480,11 @@ mod test {
             Ok(Arc::new(StringArray::from(result)))
         }
 
-        fn parameters() -> Option<Vec<DataType>> {
-            Some(vec![DataType::Utf8])
-        }
-
-        fn return_type() -> DataType {
-            DataType::Utf8
+        fn signatures() -> Vec<ArrowFunctionSignature> {
+            vec![ArrowFunctionSignature {
+                parameters: Some(vec![DataType::Utf8]),
+                return_type: DataType::Utf8,
+            }]
         }
     }
 
@@ -516,12 +535,78 @@ mod test {
             Ok(Arc::new(::arrow::array::Float32Array::from(result)))
         }
 
-        fn parameters() -> Option<Vec<DataType>> {
-            Some(vec![DataType::Float32, DataType::Float32])
+        fn signatures() -> Vec<ArrowFunctionSignature> {
+            vec![ArrowFunctionSignature {
+                parameters: Some(vec![DataType::Float32, DataType::Float32]),
+                return_type: DataType::Float32,
+            }]
+        }
+    }
+
+    // accepts a string or a number and parses to int and multiplies by 2
+    struct ArrowMultipleSignatureScalar {}
+
+    impl ArrowScalar for ArrowMultipleSignatureScalar {
+        type FuncInfo = MockMeta;
+
+        fn func(info: &Self::FuncInfo, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+            println!("info: {:?}", info);
+
+            let a = input.column(0);
+            let b = input.column(1);
+
+            let result = match a.data_type() {
+                DataType::Utf8 => {
+                    let a = a
+                        .as_any()
+                        .downcast_ref::<::arrow::array::StringArray>()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.unwrap().parse::<f32>().unwrap())
+                        .collect::<Vec<_>>();
+                    let b = b
+                        .as_any()
+                        .downcast_ref::<::arrow::array::Float32Array>()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.unwrap())
+                        .collect::<Vec<_>>();
+                    a.iter().zip(b.iter()).map(|(a, b)| a * b).collect::<Vec<_>>()
+                }
+                DataType::Float32 => {
+                    let a = a
+                        .as_any()
+                        .downcast_ref::<::arrow::array::Float32Array>()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.unwrap())
+                        .collect::<Vec<_>>();
+                    let b = b
+                        .as_any()
+                        .downcast_ref::<::arrow::array::Float32Array>()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.unwrap())
+                        .collect::<Vec<_>>();
+                    a.iter().zip(b.iter()).map(|(a, b)| a * b).collect::<Vec<_>>()
+                }
+                _ => panic!("unsupported type"),
+            };
+
+            Ok(Arc::new(::arrow::array::Float32Array::from(result)))
         }
 
-        fn return_type() -> DataType {
-            DataType::Float32
+        fn signatures() -> Vec<ArrowFunctionSignature> {
+            vec![
+                ArrowFunctionSignature {
+                    parameters: Some(vec![DataType::Utf8, DataType::Float32]),
+                    return_type: DataType::Float32,
+                },
+                ArrowFunctionSignature {
+                    parameters: Some(vec![DataType::Float32, DataType::Float32]),
+                    return_type: DataType::Float32,
+                },
+            ]
         }
     }
 
@@ -548,12 +633,11 @@ mod test {
             Ok(())
         }
 
-        fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-            Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
-        }
-
-        fn return_type() -> LogicalTypeHandle {
-            LogicalTypeHandle::from(LogicalTypeId::Varchar)
+        fn signatures() -> Vec<ScalarFunctionSignature> {
+            vec![ScalarFunctionSignature {
+                parameters: Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)]),
+                return_type: LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            }]
         }
     }
 
@@ -582,15 +666,14 @@ mod test {
             Ok(())
         }
 
-        fn return_type() -> LogicalTypeHandle {
-            LogicalTypeHandle::from(LogicalTypeId::Varchar)
-        }
-
-        fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-            Some(vec![
-                LogicalTypeHandle::from(LogicalTypeId::Varchar),
-                LogicalTypeHandle::from(LogicalTypeId::Integer),
-            ])
+        fn signatures() -> Vec<ScalarFunctionSignature> {
+            vec![ScalarFunctionSignature {
+                parameters: Some(vec![
+                    LogicalTypeHandle::from(LogicalTypeId::Varchar),
+                    LogicalTypeHandle::from(LogicalTypeId::Integer),
+                ]),
+                return_type: LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            }]
         }
     }
 
@@ -676,6 +759,28 @@ mod test {
 
         let batches = conn
             .prepare("select nobie_repeat('Ho ho ho, 🎅🎄', 10) as message from range(8)")?
+            .query_arrow([])?
+            .collect::<Vec<_>>();
+
+        print_batches(&batches)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_multiple_signatures() -> Result<(), Box<dyn Error>> {
+        let conn = Connection::open_in_memory()?;
+        conn.register_scalar_function::<ArrowMultipleSignatureScalar>("nobie_multi_sig")?;
+
+        let batches = conn
+            .prepare("select nobie_multi_sig('1230.0', 5) as message from range(8)")?
+            .query_arrow([])?
+            .collect::<Vec<_>>();
+
+        print_batches(&batches)?;
+
+        let batches = conn
+            .prepare("select nobie_multi_sig(12, 10) as message from range(8)")?
             .query_arrow([])?
             .collect::<Vec<_>>();
 
