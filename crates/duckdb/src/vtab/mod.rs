@@ -184,7 +184,7 @@ impl ScalarFunctionSignature {
 ///
 pub trait VScalar: Sized {
     /// blah
-    type Info: Default;
+    type State: Default;
     /// The actual function
     ///
     /// # Safety
@@ -193,8 +193,8 @@ pub trait VScalar: Sized {
     ///
     /// - Dereferences multiple raw pointers (`func``).
     ///
-    unsafe fn func(
-        func: &Self::Info,
+    unsafe fn invoke(
+        state: &Self::State,
         input: &mut DataChunkHandle,
         output: &mut dyn WritableVector,
     ) -> Result<(), Box<dyn std::error::Error>>;
@@ -221,10 +221,10 @@ pub struct ArrowFunctionSignature {
 /// blah
 pub trait ArrowScalar: Sized {
     /// blah
-    type FuncInfo: Default;
+    type State: Default;
 
     /// blah
-    fn func(info: &Self::FuncInfo, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>>;
+    fn invoke(info: &Self::State, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>>;
 
     fn signatures() -> Vec<ArrowFunctionSignature>;
 }
@@ -232,17 +232,17 @@ pub trait ArrowScalar: Sized {
 impl<T> VScalar for T
 where
     T: ArrowScalar,
-    T::FuncInfo: Debug,
+    T::State: Debug,
 {
-    type Info = T::FuncInfo;
+    type State = T::State;
 
-    unsafe fn func(
-        info: &Self::Info,
+    unsafe fn invoke(
+        info: &Self::State,
         input: &mut DataChunkHandle,
         out: &mut dyn WritableVector,
     ) -> Result<(), Box<dyn std::error::Error>> {
         println!("info: {:?}", info);
-        let array = T::func(info, data_chunk_to_arrow(input)?)?;
+        let array = T::invoke(info, data_chunk_to_arrow(input)?)?;
         write_arrow_array_to_vector(&array, out)
     }
 
@@ -297,7 +297,7 @@ where
 {
     let info = FunctionInfo::from(info);
     let mut input = DataChunkHandle::new_unowned(input);
-    let result = T::func(info.get_scalar_extra_info(), &mut input, &mut output);
+    let result = T::invoke(info.get_scalar_extra_info(), &mut input, &mut output);
     if result.is_err() {
         info.set_error(&result.err().unwrap().to_string());
     }
@@ -327,14 +327,14 @@ impl Connection {
     #[inline]
     pub fn register_scalar_function<S: VScalar>(&self, name: &str) -> Result<()>
     where
-        S::Info: Debug,
+        S::State: Debug,
     {
         let set = ScalarFunctionSet::new(name);
         for signature in S::signatures() {
             let scalar_function = ScalarFunction::new(name)?;
             signature.register_with_scalar(&scalar_function);
             scalar_function.set_function(Some(scalar_func::<S>));
-            scalar_function.set_extra_info::<S::Info>();
+            scalar_function.set_extra_info::<S::State>();
             set.add_function(scalar_function)?;
         }
         self.db.borrow_mut().register_scalar_function_set(set)
@@ -473,9 +473,9 @@ mod test {
     struct HelloArrowScalar {}
 
     impl ArrowScalar for HelloArrowScalar {
-        type FuncInfo = ();
+        type State = ();
 
-        fn func(info: &Self::FuncInfo, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+        fn invoke(info: &Self::State, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
             let name = input.column(0).as_any().downcast_ref::<StringArray>().unwrap();
             let result = name.iter().map(|v| format!("Hello {}", v.unwrap())).collect::<Vec<_>>();
             Ok(Arc::new(StringArray::from(result)))
@@ -511,9 +511,9 @@ mod test {
     struct ArrowMultiplyScalar {}
 
     impl ArrowScalar for ArrowMultiplyScalar {
-        type FuncInfo = MockMeta;
+        type State = MockMeta;
 
-        fn func(info: &Self::FuncInfo, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+        fn invoke(info: &Self::State, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
             println!("info: {:?}", info);
 
             let a = input
@@ -548,9 +548,9 @@ mod test {
     struct ArrowMultipleSignatureScalar {}
 
     impl ArrowScalar for ArrowMultipleSignatureScalar {
-        type FuncInfo = MockMeta;
+        type State = MockMeta;
 
-        fn func(info: &Self::FuncInfo, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+        fn invoke(info: &Self::State, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
             println!("info: {:?}", info);
 
             let a = input.column(0);
@@ -614,10 +614,10 @@ mod test {
     struct HelloTestFunction {}
 
     impl VScalar for HelloTestFunction {
-        type Info = ();
+        type State = ();
 
-        unsafe fn func(
-            _func: &Self::Info,
+        unsafe fn invoke(
+            _func: &Self::State,
             input: &mut DataChunkHandle,
             output: &mut dyn WritableVector,
         ) -> Result<(), Box<dyn std::error::Error>> {
@@ -645,10 +645,10 @@ mod test {
     struct Repeat {}
 
     impl VScalar for Repeat {
-        type Info = ();
+        type State = ();
 
-        unsafe fn func(
-            _func: &Self::Info,
+        unsafe fn invoke(
+            _: &Self::State,
             input: &mut DataChunkHandle,
             output: &mut dyn WritableVector,
         ) -> Result<(), Box<dyn std::error::Error>> {
