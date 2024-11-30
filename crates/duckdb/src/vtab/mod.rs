@@ -164,18 +164,49 @@ where
     }
 }
 
+pub enum Parameters {
+    Exact(Vec<LogicalTypeHandle>),
+    Variadic(LogicalTypeHandle),
+}
+
 /// Duckdb scalar function signature
 pub struct ScalarFunctionSignature {
-    parameters: Option<Vec<LogicalTypeHandle>>,
+    parameters: Option<Parameters>,
     return_type: LogicalTypeHandle,
+}
+
+impl ScalarFunctionSignature {
+    pub fn exact(params: Vec<LogicalTypeHandle>, return_type: LogicalTypeHandle) -> Self {
+        ScalarFunctionSignature {
+            parameters: Some(Parameters::Exact(params)),
+            return_type,
+        }
+    }
+
+    pub fn variadic(param: LogicalTypeHandle, return_type: LogicalTypeHandle) -> Self {
+        ScalarFunctionSignature {
+            parameters: Some(Parameters::Variadic(param)),
+            return_type,
+        }
+    }
 }
 
 impl ScalarFunctionSignature {
     fn register_with_scalar(&self, f: &ScalarFunction) {
         f.set_return_type(&self.return_type);
 
-        for param in self.parameters.iter().flatten() {
-            f.add_parameter(param);
+        match &self.parameters {
+            Some(Parameters::Exact(params)) => {
+                for param in params.iter() {
+                    f.add_parameter(param);
+                }
+            }
+            Some(Parameters::Variadic(param)) => {
+                f.add_variadic_parameter(param);
+            }
+            None => {
+                // do nothing
+            }
         }
     }
 }
@@ -213,9 +244,41 @@ pub trait VScalar: Sized {
     // fn return_type() -> LogicalTypeHandle;
 }
 
+pub enum ArrowParams {
+    Exact(Vec<DataType>),
+    Variadic(DataType),
+}
+
+impl From<ArrowParams> for Parameters {
+    fn from(params: ArrowParams) -> Self {
+        match params {
+            ArrowParams::Exact(params) => Parameters::Exact(
+                params
+                    .into_iter()
+                    .map(|v| LogicalTypeId::try_from(&v).expect("type should be converted").into())
+                    .collect(),
+            ),
+            ArrowParams::Variadic(param) => Parameters::Variadic(
+                LogicalTypeId::try_from(&param)
+                    .expect("type should be converted")
+                    .into(),
+            ),
+        }
+    }
+}
+
 pub struct ArrowFunctionSignature {
-    pub parameters: Option<Vec<DataType>>,
+    pub parameters: Option<ArrowParams>,
     pub return_type: DataType,
+}
+
+impl ArrowFunctionSignature {
+    pub fn exact(params: Vec<DataType>, return_type: DataType) -> Self {
+        ArrowFunctionSignature {
+            parameters: Some(ArrowParams::Exact(params)),
+            return_type,
+        }
+    }
 }
 
 /// blah
@@ -250,11 +313,7 @@ where
         T::signatures()
             .into_iter()
             .map(|sig| ScalarFunctionSignature {
-                parameters: sig.parameters.map(|v| {
-                    v.into_iter()
-                        .flat_map(|dt| LogicalTypeId::try_from(&dt).ok().map(Into::into))
-                        .collect()
-                }),
+                parameters: sig.parameters.map(Into::into),
                 return_type: LogicalTypeId::try_from(&sig.return_type)
                     .ok()
                     .map(Into::into)
@@ -485,10 +544,7 @@ mod test {
         }
 
         fn signatures() -> Vec<ArrowFunctionSignature> {
-            vec![ArrowFunctionSignature {
-                parameters: Some(vec![DataType::Utf8]),
-                return_type: DataType::Utf8,
-            }]
+            vec![ArrowFunctionSignature::exact(vec![DataType::Utf8], DataType::Utf8)]
         }
     }
 
@@ -540,10 +596,10 @@ mod test {
         }
 
         fn signatures() -> Vec<ArrowFunctionSignature> {
-            vec![ArrowFunctionSignature {
-                parameters: Some(vec![DataType::Float32, DataType::Float32]),
-                return_type: DataType::Float32,
-            }]
+            vec![ArrowFunctionSignature::exact(
+                vec![DataType::Float32, DataType::Float32],
+                DataType::Float32,
+            )]
         }
     }
 
@@ -602,14 +658,8 @@ mod test {
 
         fn signatures() -> Vec<ArrowFunctionSignature> {
             vec![
-                ArrowFunctionSignature {
-                    parameters: Some(vec![DataType::Utf8, DataType::Float32]),
-                    return_type: DataType::Float32,
-                },
-                ArrowFunctionSignature {
-                    parameters: Some(vec![DataType::Float32, DataType::Float32]),
-                    return_type: DataType::Float32,
-                },
+                ArrowFunctionSignature::exact(vec![DataType::Utf8, DataType::Float32], DataType::Float32),
+                ArrowFunctionSignature::exact(vec![DataType::Float32, DataType::Float32], DataType::Float32),
             ]
         }
     }
@@ -638,10 +688,10 @@ mod test {
         }
 
         fn signatures() -> Vec<ScalarFunctionSignature> {
-            vec![ScalarFunctionSignature {
-                parameters: Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)]),
-                return_type: LogicalTypeHandle::from(LogicalTypeId::Varchar),
-            }]
+            vec![ScalarFunctionSignature::exact(
+                vec![LogicalTypeId::Varchar.into()],
+                LogicalTypeId::Varchar.into(),
+            )]
         }
     }
 
@@ -671,13 +721,13 @@ mod test {
         }
 
         fn signatures() -> Vec<ScalarFunctionSignature> {
-            vec![ScalarFunctionSignature {
-                parameters: Some(vec![
+            vec![ScalarFunctionSignature::exact(
+                vec![
                     LogicalTypeHandle::from(LogicalTypeId::Varchar),
                     LogicalTypeHandle::from(LogicalTypeId::Integer),
-                ]),
-                return_type: LogicalTypeHandle::from(LogicalTypeId::Varchar),
-            }]
+                ],
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            )]
         }
     }
 

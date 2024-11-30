@@ -3,7 +3,8 @@ use libduckdb_sys::{
     duckdb_create_scalar_function_set, duckdb_destroy_scalar_function, duckdb_scalar_function,
     duckdb_scalar_function_add_parameter, duckdb_scalar_function_get_extra_info, duckdb_scalar_function_set,
     duckdb_scalar_function_set_error, duckdb_scalar_function_set_extra_info, duckdb_scalar_function_set_function,
-    duckdb_scalar_function_set_name, duckdb_scalar_function_set_return_type, duckdb_vector, DuckDBSuccess,
+    duckdb_scalar_function_set_name, duckdb_scalar_function_set_return_type, duckdb_scalar_function_set_varargs,
+    duckdb_vector, DuckDBSuccess,
 };
 
 use crate::Error;
@@ -477,6 +478,13 @@ impl ScalarFunction {
     pub fn add_parameter(&self, logical_type: &LogicalTypeHandle) -> &Self {
         unsafe {
             duckdb_scalar_function_add_parameter(self.ptr, logical_type.ptr);
+        }
+        self
+    }
+
+    pub fn add_variadic_parameter(&self, logical_type: &LogicalTypeHandle) -> &Self {
+        unsafe {
+            duckdb_scalar_function_set_varargs(self.ptr, logical_type.ptr);
         }
         self
     }
