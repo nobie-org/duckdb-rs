@@ -2,8 +2,8 @@ use libduckdb_sys::{
     duckdb_add_scalar_function_to_set, duckdb_connection, duckdb_create_scalar_function,
     duckdb_create_scalar_function_set, duckdb_destroy_scalar_function, duckdb_scalar_function,
     duckdb_scalar_function_add_parameter, duckdb_scalar_function_get_extra_info, duckdb_scalar_function_set,
-    duckdb_scalar_function_set_extra_info, duckdb_scalar_function_set_function, duckdb_scalar_function_set_name,
-    duckdb_scalar_function_set_return_type, duckdb_vector, DuckDBSuccess,
+    duckdb_scalar_function_set_error, duckdb_scalar_function_set_extra_info, duckdb_scalar_function_set_function,
+    duckdb_scalar_function_set_name, duckdb_scalar_function_set_return_type, duckdb_vector, DuckDBSuccess,
 };
 
 use crate::Error;
@@ -345,9 +345,30 @@ use super::ffi::{
 
 /// An interface to store and retrieve data during the function execution stage
 #[derive(Debug)]
-pub struct FunctionInfo(duckdb_function_info);
+pub struct ScalarFunctionInfo(duckdb_function_info);
 
-impl FunctionInfo {
+impl From<duckdb_function_info> for ScalarFunctionInfo {
+    fn from(ptr: duckdb_function_info) -> Self {
+        Self(ptr)
+    }
+}
+
+impl ScalarFunctionInfo {
+    pub unsafe fn get_scalar_extra_info<T>(&self) -> &T {
+        &*(duckdb_scalar_function_get_extra_info(self.0) as *const T)
+    }
+
+    pub unsafe fn set_error(&self, error: &str) {
+        let c_str = CString::new(error).unwrap();
+        duckdb_scalar_function_set_error(self.0, c_str.as_ptr());
+    }
+}
+
+/// An interface to store and retrieve data during the function execution stage
+#[derive(Debug)]
+pub struct TableFunctionInfo(duckdb_function_info);
+
+impl TableFunctionInfo {
     /// Report that an error has occurred while executing the function.
     ///
     /// # Arguments
@@ -357,10 +378,6 @@ impl FunctionInfo {
         unsafe {
             duckdb_function_set_error(self.0, c_str.as_ptr());
         }
-    }
-
-    pub unsafe fn get_scalar_extra_info<T>(&self) -> &T {
-        &*(duckdb_scalar_function_get_extra_info(self.0) as *const T)
     }
 
     /// Gets the bind data set by [`BindInfo::set_bind_data`] during the bind.
@@ -396,7 +413,7 @@ impl FunctionInfo {
     }
 }
 
-impl From<duckdb_function_info> for FunctionInfo {
+impl From<duckdb_function_info> for TableFunctionInfo {
     fn from(ptr: duckdb_function_info) -> Self {
         Self(ptr)
     }

@@ -23,8 +23,8 @@ mod excel;
 use ::arrow::array::{Array, RecordBatch};
 use ::arrow::datatypes::DataType;
 use arrow::{data_chunk_to_arrow, write_arrow_array_to_vector, WritableVector};
-pub use function::{BindInfo, FunctionInfo, InitInfo, TableFunction};
-use function::{ScalarFunction, ScalarFunctionSet};
+pub use function::{BindInfo, InitInfo, TableFunction, TableFunctionInfo};
+use function::{ScalarFunction, ScalarFunctionInfo, ScalarFunctionSet};
 use libduckdb_sys::{duckdb_string_t, duckdb_vector};
 pub use value::Value;
 
@@ -108,7 +108,7 @@ pub trait VTab: Sized {
     /// - The `init_info` and `bind_info` data pointed to remains valid and is not freed until after this function completes.
     /// - No other threads are concurrently mutating the data pointed to by `init_info` and `bind_info` without proper synchronization.
     /// - The `output` parameter is correctly initialized and can safely be written to.
-    unsafe fn func(func: &FunctionInfo, output: &mut DataChunkHandle) -> Result<(), Box<dyn std::error::Error>>;
+    unsafe fn func(func: &TableFunctionInfo, output: &mut DataChunkHandle) -> Result<(), Box<dyn std::error::Error>>;
     /// Does the table function support pushdown
     /// default is false
     fn supports_pushdown() -> bool {
@@ -130,7 +130,7 @@ unsafe extern "C" fn func<T>(info: duckdb_function_info, output: duckdb_data_chu
 where
     T: VTab,
 {
-    let info = FunctionInfo::from(info);
+    let info = TableFunctionInfo::from(info);
     let mut data_chunk_handle = DataChunkHandle::new_unowned(output);
     let result = T::func(&info, &mut data_chunk_handle);
     if result.is_err() {
@@ -282,7 +282,7 @@ pub trait VScalarFlatVector: Sized {
     /// - Dereferences multiple raw pointers (`func``).
     ///
     unsafe fn func(
-        func: &FunctionInfo,
+        func: &TableFunctionInfo,
         input: &mut DataChunkHandle,
         output: &mut FlatVector,
     ) -> Result<(), Box<dyn std::error::Error>>;
@@ -301,7 +301,7 @@ unsafe extern "C" fn scalar_func<T>(info: duckdb_function_info, input: duckdb_da
 where
     T: VScalar,
 {
-    let info = FunctionInfo::from(info);
+    let info = ScalarFunctionInfo::from(info);
     let mut input = DataChunkHandle::new_unowned(input);
     let result = T::invoke(&mut input, &mut output);
     println!("invoked scalar function");
@@ -421,7 +421,10 @@ mod test {
             Ok(())
         }
 
-        unsafe fn func(func: &FunctionInfo, output: &mut DataChunkHandle) -> Result<(), Box<dyn std::error::Error>> {
+        unsafe fn func(
+            func: &TableFunctionInfo,
+            output: &mut DataChunkHandle,
+        ) -> Result<(), Box<dyn std::error::Error>> {
             let init_info = func.get_init_data::<HelloInitData>();
             let bind_info = func.get_bind_data::<HelloBindData>();
 
@@ -466,7 +469,7 @@ mod test {
             HelloVTab::init(init_info, data)
         }
 
-        unsafe fn func(func: &FunctionInfo, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+        unsafe fn func(func: &TableFunctionInfo, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
             HelloVTab::func(func, output)
         }
 

@@ -1,4 +1,4 @@
-use super::{BindInfo, DataChunkHandle, Free, FunctionInfo, InitInfo, LogicalTypeHandle, LogicalTypeId, VTab};
+use super::{BindInfo, DataChunkHandle, Free, InitInfo, LogicalTypeHandle, LogicalTypeId, TableFunctionInfo, VTab};
 use std::{
     borrow::Cow,
     ffi::{c_char, CStr},
@@ -116,7 +116,7 @@ impl VTab for ArrowVTab {
         Ok(())
     }
 
-    unsafe fn func(func: &FunctionInfo, output: &mut DataChunkHandle) -> Result<(), Box<dyn std::error::Error>> {
+    unsafe fn func(func: &TableFunctionInfo, output: &mut DataChunkHandle) -> Result<(), Box<dyn std::error::Error>> {
         let init_info = func.get_init_data::<ArrowInitData>();
         let bind_info = func.get_bind_data::<ArrowBindData>();
         unsafe {
