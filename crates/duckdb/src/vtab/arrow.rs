@@ -313,9 +313,11 @@ pub fn flat_vector_to_arrow_array(
                 }
             });
 
-            println!("duck_strings: {:?}", duck_strings);
+            let values = duck_strings.collect::<Vec<_>>();
 
-            Ok(Arc::new(StringArray::from(duck_strings.collect::<Vec<_>>())))
+            println!("duck_strings: {:?}", values);
+
+            Ok(Arc::new(StringArray::from(values)))
         }
         LogicalTypeId::Boolean => {
             let data = vector.as_slice_with_len::<bool>(len);
