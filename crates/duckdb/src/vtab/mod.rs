@@ -226,6 +226,7 @@ pub trait ArrowScalar: Sized {
     /// blah
     fn invoke(info: &Self::State, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>>;
 
+    /// blah
     fn signatures() -> Vec<ArrowFunctionSignature>;
 }
 
@@ -241,7 +242,6 @@ where
         input: &mut DataChunkHandle,
         out: &mut dyn WritableVector,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        println!("info: {:?}", info);
         let array = T::invoke(info, data_chunk_to_arrow(input)?)?;
         write_arrow_array_to_vector(&array, out)
     }
@@ -298,8 +298,9 @@ where
     let info = FunctionInfo::from(info);
     let mut input = DataChunkHandle::new_unowned(input);
     let result = T::invoke(info.get_scalar_extra_info(), &mut input, &mut output);
-    if result.is_err() {
-        info.set_error(&result.err().unwrap().to_string());
+    if let Err(e) = result {
+        println!("setting error: {}", e.to_string());
+        info.set_error(&e.to_string());
     }
 }
 

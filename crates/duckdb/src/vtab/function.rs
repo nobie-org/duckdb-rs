@@ -355,7 +355,7 @@ impl FunctionInfo {
     pub fn set_error(&self, error: &str) {
         let c_str = CString::new(error).unwrap();
         unsafe {
-            duckdb_function_set_error(self.0, c_str.as_ptr() as *const c_char);
+            duckdb_function_set_error(self.0, c_str.as_ptr());
         }
     }
 
