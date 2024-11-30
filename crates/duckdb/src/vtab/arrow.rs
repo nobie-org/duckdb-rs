@@ -252,9 +252,11 @@ impl<'a> DuckString<'a> {
 impl<'a> DuckString<'a> {
     /// convert duckdb_string_t to a copy on write string
     pub fn as_str(&mut self) -> std::borrow::Cow<'a, str> {
-        let len = unsafe { duckdb_string_t_length(*self.ptr) };
-        let c_ptr = unsafe { duckdb_string_t_data(self.ptr) };
-        let slice = unsafe { std::slice::from_raw_parts(c_ptr as *const u8, len as usize) };
+        let slice = unsafe {
+            let len = duckdb_string_t_length(*self.ptr);
+            let c_ptr = duckdb_string_t_data(self.ptr);
+            std::slice::from_raw_parts(c_ptr as *const u8, len as usize)
+        };
 
         String::from_utf8_lossy(slice)
     }
