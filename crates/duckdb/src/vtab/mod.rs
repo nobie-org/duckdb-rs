@@ -298,6 +298,7 @@ where
     let info = FunctionInfo::from(info);
     let mut input = DataChunkHandle::new_unowned(input);
     let result = T::invoke(info.get_scalar_extra_info(), &mut input, &mut output);
+    println!("invoked scalar function");
     if let Err(e) = result {
         println!("setting error: {}", e.to_string());
         info.set_error(&e.to_string());
