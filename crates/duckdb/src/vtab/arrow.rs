@@ -313,6 +313,8 @@ pub fn flat_vector_to_arrow_array(
                 }
             });
 
+            println!("duck_strings: {:?}", duck_strings);
+
             Ok(Arc::new(StringArray::from(duck_strings.collect::<Vec<_>>())))
         }
         LogicalTypeId::Boolean => {
