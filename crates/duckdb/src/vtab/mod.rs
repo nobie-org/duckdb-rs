@@ -212,9 +212,8 @@ impl ScalarFunctionSignature {
 }
 
 /// Duckdb scalar function trait
-///
 pub trait VScalar: Sized {
-    /// blah
+    /// State that persists across invocations of the scalar function (the lifetime of the connection)
     type State: Default;
     /// The actual function
     ///
@@ -232,16 +231,6 @@ pub trait VScalar: Sized {
 
     /// The possible signatures of the scalar function
     fn signatures() -> Vec<ScalarFunctionSignature>;
-
-    // /// The parameters of the table function
-    // /// default is None
-    // fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-    //     None
-    // }
-
-    // /// The return type of the scalar function
-    // /// default is None
-    // fn return_type() -> LogicalTypeHandle;
 }
 
 pub enum ArrowParams {
@@ -324,9 +313,8 @@ where
             .map(|sig| ScalarFunctionSignature {
                 parameters: sig.parameters.map(Into::into),
                 return_type: LogicalTypeId::try_from(&sig.return_type)
-                    .ok()
-                    .map(Into::into)
-                    .unwrap_or_else(|| LogicalTypeHandle::from(LogicalTypeId::Integer)),
+                    .expect("type should be converted")
+                    .into(),
             })
             .collect()
     }

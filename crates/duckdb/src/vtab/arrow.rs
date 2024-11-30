@@ -176,9 +176,6 @@ pub fn to_duckdb_type_id(data_type: &DataType) -> Result<LogicalTypeId, Box<dyn 
         DataType::Struct(_) => Struct,
         DataType::Union(_, _) => Union,
         // DataType::Dictionary(_, _) => todo!(),
-        // duckdb/src/main/capi/helper-c.cpp does not support decimal
-        // DataType::Decimal128(_, _) => Decimal,
-        // DataType::Decimal256(_, _) => Decimal,
         DataType::Decimal128(_, _) => Decimal,
         DataType::Decimal256(_, _) => Double,
         DataType::Map(_, _) => Map,
