@@ -194,7 +194,7 @@ pub trait VScalar: Sized {
     /// - Dereferences multiple raw pointers (`func``).
     ///
     unsafe fn invoke(
-        state: &Self::State,
+        // state: &Self::State,
         input: &mut DataChunkHandle,
         output: &mut dyn WritableVector,
     ) -> Result<(), Box<dyn std::error::Error>>;
@@ -224,7 +224,10 @@ pub trait ArrowScalar: Sized {
     type State: Default;
 
     /// blah
-    fn invoke(info: &Self::State, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>>;
+    fn invoke(
+        // info: &Self::State,
+        input: RecordBatch,
+    ) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>>;
 
     /// blah
     fn signatures() -> Vec<ArrowFunctionSignature>;
@@ -238,11 +241,14 @@ where
     type State = T::State;
 
     unsafe fn invoke(
-        info: &Self::State,
+        // info: &Self::State,
         input: &mut DataChunkHandle,
         out: &mut dyn WritableVector,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let array = T::invoke(info, data_chunk_to_arrow(input)?)?;
+        let array = T::invoke(
+            // info,
+            data_chunk_to_arrow(input)?,
+        )?;
         write_arrow_array_to_vector(&array, out)
     }
 
@@ -297,7 +303,7 @@ where
 {
     let info = FunctionInfo::from(info);
     let mut input = DataChunkHandle::new_unowned(input);
-    let result = T::invoke(info.get_scalar_extra_info(), &mut input, &mut output);
+    let result = T::invoke(&mut input, &mut output);
     println!("invoked scalar function");
     if let Err(e) = result {
         println!("setting error: {}", e.to_string());
@@ -336,7 +342,7 @@ impl Connection {
             let scalar_function = ScalarFunction::new(name)?;
             signature.register_with_scalar(&scalar_function);
             scalar_function.set_function(Some(scalar_func::<S>));
-            scalar_function.set_extra_info::<S::State>();
+            // scalar_function.set_extra_info::<S::State>();
             set.add_function(scalar_function)?;
         }
         self.db.borrow_mut().register_scalar_function_set(set)
@@ -477,7 +483,10 @@ mod test {
     impl ArrowScalar for HelloArrowScalar {
         type State = ();
 
-        fn invoke(info: &Self::State, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+        fn invoke(
+            // info: &Self::State,
+            input: RecordBatch,
+        ) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
             let name = input.column(0).as_any().downcast_ref::<StringArray>().unwrap();
             let result = name.iter().map(|v| format!("Hello {}", v.unwrap())).collect::<Vec<_>>();
             Ok(Arc::new(StringArray::from(result)))
@@ -515,8 +524,11 @@ mod test {
     impl ArrowScalar for ArrowMultiplyScalar {
         type State = MockMeta;
 
-        fn invoke(info: &Self::State, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
-            println!("info: {:?}", info);
+        fn invoke(
+            // info: &Self::State,
+            input: RecordBatch,
+        ) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+            // println!("info: {:?}", info);
 
             let a = input
                 .column(0)
@@ -552,8 +564,11 @@ mod test {
     impl ArrowScalar for ArrowMultipleSignatureScalar {
         type State = MockMeta;
 
-        fn invoke(info: &Self::State, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
-            println!("info: {:?}", info);
+        fn invoke(
+            // info: &Self::State,
+            input: RecordBatch,
+        ) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+            // println!("info: {:?}", info);
 
             let a = input.column(0);
             let b = input.column(1);
@@ -619,7 +634,7 @@ mod test {
         type State = ();
 
         unsafe fn invoke(
-            _func: &Self::State,
+            // _func: &Self::State,
             input: &mut DataChunkHandle,
             output: &mut dyn WritableVector,
         ) -> Result<(), Box<dyn std::error::Error>> {
@@ -650,7 +665,7 @@ mod test {
         type State = ();
 
         unsafe fn invoke(
-            _: &Self::State,
+            // _: &Self::State,
             input: &mut DataChunkHandle,
             output: &mut dyn WritableVector,
         ) -> Result<(), Box<dyn std::error::Error>> {
