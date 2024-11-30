@@ -29,7 +29,7 @@ use arrow::{
 
 use libduckdb_sys::{
     duckdb_date, duckdb_from_timestamp, duckdb_hugeint, duckdb_interval, duckdb_string_t, duckdb_string_t_data,
-    duckdb_time, duckdb_timestamp, duckdb_vector,
+    duckdb_string_t_length, duckdb_time, duckdb_timestamp, duckdb_vector,
 };
 use num::{cast::AsPrimitive, ToPrimitive};
 
@@ -252,7 +252,11 @@ impl<'a> DuckString<'a> {
 impl<'a> DuckString<'a> {
     /// convert duckdb_string_t to a copy on write string
     pub fn as_str(&mut self) -> std::borrow::Cow<'a, str> {
-        unsafe { CStr::from_ptr(duckdb_string_t_data(self.ptr)).to_string_lossy() }
+        let len = unsafe { duckdb_string_t_length(*self.ptr) };
+        let c_ptr = unsafe { duckdb_string_t_data(self.ptr) };
+        let slice = unsafe { std::slice::from_raw_parts(c_ptr as *const u8, len as usize) };
+
+        String::from_utf8_lossy(slice)
     }
 
     /// convert duckdb_string_t to a byte slice
@@ -314,8 +318,6 @@ pub fn flat_vector_to_arrow_array(
             });
 
             let values = duck_strings.collect::<Vec<_>>();
-
-            println!("duck_strings: {:?}", values);
 
             Ok(Arc::new(StringArray::from(values)))
         }
