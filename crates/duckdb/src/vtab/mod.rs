@@ -249,6 +249,15 @@ pub enum ArrowParams {
     Variadic(DataType),
 }
 
+impl AsRef<[DataType]> for ArrowParams {
+    fn as_ref(&self) -> &[DataType] {
+        match self {
+            ArrowParams::Exact(params) => params.as_ref(),
+            ArrowParams::Variadic(param) => std::slice::from_ref(param),
+        }
+    }
+}
+
 impl From<ArrowParams> for Parameters {
     fn from(params: ArrowParams) -> Self {
         match params {
