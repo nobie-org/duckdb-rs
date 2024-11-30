@@ -323,33 +323,6 @@ where
     }
 }
 
-/// blah
-pub trait VScalarFlatVector: Sized {
-    // type ExtraInfo;
-    /// The actual function
-    ///
-    /// # Safety
-    ///
-    /// This function is unsafe because it:
-    ///
-    /// - Dereferences multiple raw pointers (`func``).
-    ///
-    unsafe fn func(
-        func: &TableFunctionInfo,
-        input: &mut DataChunkHandle,
-        output: &mut FlatVector,
-    ) -> Result<(), Box<dyn std::error::Error>>;
-    /// The parameters of the table function
-    /// default is None
-    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-        None
-    }
-
-    /// The return type of the scalar function
-    /// default is None
-    fn return_type() -> LogicalTypeHandle;
-}
-
 unsafe extern "C" fn scalar_func<T>(info: duckdb_function_info, input: duckdb_data_chunk, mut output: duckdb_vector)
 where
     T: VScalar,
