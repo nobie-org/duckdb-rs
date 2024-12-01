@@ -252,26 +252,17 @@ impl<'a> DuckString<'a> {
 impl<'a> DuckString<'a> {
     /// convert duckdb_string_t to a copy on write string
     pub fn as_str(&mut self) -> std::borrow::Cow<'a, str> {
-        let slice = unsafe {
-            let len = duckdb_string_t_length(*self.ptr);
-            let c_ptr = duckdb_string_t_data(self.ptr);
-            std::slice::from_raw_parts(c_ptr as *const u8, len as usize)
-        };
-
-        String::from_utf8_lossy(slice)
+        String::from_utf8_lossy(self.as_bytes())
     }
 
     /// convert duckdb_string_t to a byte slice
-    pub fn as_bytes(&mut self) -> &[u8] {
-        // Safety: duckdb_string_t_data returns a pointer to the start of the string
-        // and duckdb_string_t.len returns the length of the string
+    pub fn as_bytes(&mut self) -> &'a [u8] {
         unsafe {
-            let data = duckdb_string_t_data(self.ptr);
-            CStr::from_ptr(data).to_bytes()
+            let len = duckdb_string_t_length(*self.ptr);
+            let c_ptr = duckdb_string_t_data(self.ptr);
+            std::slice::from_raw_parts(c_ptr as *const u8, len as usize)
         }
     }
-
-    // pub fn
 }
 
 // FIXME: flat vectors don't have all of thsese types. I think they only
