@@ -40,10 +40,7 @@
 //!         .unwrap()
 //! }
 //! ```
-use crate::{
-    vtab::{VScalar, VTab},
-    Config, Connection, Error, Result,
-};
+use crate::{vscalar::VScalar, vtab::VTab, Config, Connection, Error, Result};
 use std::{
     fmt::Debug,
     path::Path,
