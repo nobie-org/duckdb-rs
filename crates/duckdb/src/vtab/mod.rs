@@ -1,4 +1,3 @@
-use crate::Arrow;
 use crate::{error::Error, inner_connection::InnerConnection, Connection, Result};
 
 use super::{ffi, ffi::duckdb_free};
@@ -25,10 +24,10 @@ use ::arrow::datatypes::DataType;
 use arrow::{data_chunk_to_arrow, write_arrow_array_to_vector, WritableVector};
 pub use function::{BindInfo, InitInfo, TableFunction, TableFunctionInfo};
 use function::{ScalarFunction, ScalarFunctionInfo, ScalarFunctionSet};
-use libduckdb_sys::{duckdb_string_t, duckdb_vector};
+use libduckdb_sys::duckdb_vector;
 pub use value::Value;
 
-use crate::core::{DataChunkHandle, FlatVector, LogicalTypeHandle, LogicalTypeId, Vector};
+use crate::core::{DataChunkHandle, LogicalTypeHandle, LogicalTypeId};
 use ffi::{duckdb_bind_info, duckdb_data_chunk, duckdb_function_info, duckdb_init_info};
 
 use ffi::duckdb_malloc;
@@ -164,8 +163,11 @@ where
     }
 }
 
+/// Duckdb scalar function parameters
 pub enum Parameters {
+    /// Exact parameters
     Exact(Vec<LogicalTypeHandle>),
+    /// Variadic parameters
     Variadic(LogicalTypeHandle),
 }
 
@@ -176,6 +178,7 @@ pub struct ScalarFunctionSignature {
 }
 
 impl ScalarFunctionSignature {
+    /// Create an exact function signature
     pub fn exact(params: Vec<LogicalTypeHandle>, return_type: LogicalTypeHandle) -> Self {
         ScalarFunctionSignature {
             parameters: Some(Parameters::Exact(params)),
@@ -183,6 +186,7 @@ impl ScalarFunctionSignature {
         }
     }
 
+    /// Create a variadic function signature
     pub fn variadic(param: LogicalTypeHandle, return_type: LogicalTypeHandle) -> Self {
         ScalarFunctionSignature {
             parameters: Some(Parameters::Variadic(param)),
@@ -502,9 +506,9 @@ mod test {
         }
     }
 
-    struct HelloArrowScalar {}
+    struct HelloScalarArrow {}
 
-    impl ArrowScalar for HelloArrowScalar {
+    impl ArrowScalar for HelloScalarArrow {
         type State = ();
 
         fn invoke(_: &Self::State, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
@@ -519,19 +523,19 @@ mod test {
     }
 
     #[derive(Debug)]
-    struct MockMeta {
-        name: String,
+    struct MockState {
+        info: String,
     }
 
-    impl Default for MockMeta {
+    impl Default for MockState {
         fn default() -> Self {
-            MockMeta {
-                name: "some meta".to_string(),
+            MockState {
+                info: "some meta".to_string(),
             }
         }
     }
 
-    impl Drop for MockMeta {
+    impl Drop for MockState {
         fn drop(&mut self) {
             println!("dropped meta");
         }
@@ -540,10 +544,11 @@ mod test {
     struct ArrowMultiplyScalar {}
 
     impl ArrowScalar for ArrowMultiplyScalar {
-        type State = MockMeta;
+        type State = MockState;
 
-        fn invoke(info: &Self::State, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
-            // println!("info: {:?}", info);
+        fn invoke(state: &Self::State, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+            println!("state: {:?}", state);
+            // assert_eq!("some meta", state.info);
 
             let a = input
                 .column(0)
@@ -574,14 +579,12 @@ mod test {
     }
 
     // accepts a string or a number and parses to int and multiplies by 2
-    struct ArrowMultipleSignatureScalar {}
+    struct ArrowOverloaded {}
 
-    impl ArrowScalar for ArrowMultipleSignatureScalar {
-        type State = MockMeta;
+    impl ArrowScalar for ArrowOverloaded {
+        type State = MockState;
 
-        fn invoke(info: &Self::State, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
-            // println!("info: {:?}", info);
-
+        fn invoke(_: &Self::State, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
             let a = input.column(0);
             let b = input.column(1);
 
@@ -634,9 +637,9 @@ mod test {
         }
     }
 
-    struct HelloTestFunction {}
+    struct EchoScalar {}
 
-    impl VScalar for HelloTestFunction {
+    impl VScalar for EchoScalar {
         type State = ();
 
         unsafe fn invoke(
@@ -726,98 +729,121 @@ mod test {
     }
 
     #[test]
-    fn test_scalar_function() -> Result<(), Box<dyn Error>> {
+    fn test_scalar() -> Result<(), Box<dyn Error>> {
         let conn = Connection::open_in_memory()?;
-        conn.register_scalar_function::<HelloTestFunction>("hello")?;
+        conn.register_scalar_function::<EchoScalar>("echo")?;
 
-        // let val = conn.query_row("select hello('matt') as hello", [], |row| <(String,)>::try_from(row))?;
-        // assert_eq!(val, ("hello".to_string(),));
+        let mut stmt = conn.prepare("select echo('hi') as hello")?;
+        let mut rows = stmt.query([])?;
 
-        let batches = conn
-            .prepare("select hello('matt') as hello from range(10)")?
-            .query_arrow([])?
-            .collect::<Vec<_>>();
-
-        print_batches(&batches)?;
+        while let Some(row) = rows.next()? {
+            let hello: String = row.get(0)?;
+            assert_eq!(hello, "hi");
+        }
 
         Ok(())
     }
 
     #[test]
-    fn test_arrow_scalar_function() -> Result<(), Box<dyn Error>> {
+    fn test_arrow_scalar() -> Result<(), Box<dyn Error>> {
         let conn = Connection::open_in_memory()?;
-        conn.register_scalar_function::<HelloArrowScalar>("hello")?;
-
-        // let val = conn.query_row("select hello('matt') as hello", [], |row| <(String,)>::try_from(row))?;
-        // assert_eq!(val, ("hello".to_string(),));
+        conn.register_scalar_function::<HelloScalarArrow>("hello")?;
 
         let batches = conn
-            .prepare("select hello('matt') as hello from range(10)")?
+            .prepare("select hello('foo') as hello from range(10)")?
             .query_arrow([])?
             .collect::<Vec<_>>();
 
-        print_batches(&batches)?;
+        for batch in batches.iter() {
+            let array = batch.column(0);
+            let array = array.as_any().downcast_ref::<::arrow::array::StringArray>().unwrap();
+            for i in 0..array.len() {
+                assert_eq!(array.value(i), format!("Hello foo"));
+            }
+        }
 
         Ok(())
     }
 
     #[test]
-    fn test_arrow_scalar_multiply_function() -> Result<(), Box<dyn Error>> {
+    fn test_arrow_scalar_multiply() -> Result<(), Box<dyn Error>> {
         let conn = Connection::open_in_memory()?;
-        conn.register_scalar_function::<ArrowMultiplyScalar>("nobie_multiply")?;
+        conn.register_scalar_function::<ArrowMultiplyScalar>("multiply_udf")?;
 
         let batches = conn
-            .prepare("select nobie_multiply(3.0, 2.0) as mult_result from range(10)")?
+            .prepare("select multiply_udf(3.0, 2.0) as mult_result from range(10)")?
             .query_arrow([])?
             .collect::<Vec<_>>();
 
-        print_batches(&batches)?;
-
+        for batch in batches.iter() {
+            let array = batch.column(0);
+            let array = array.as_any().downcast_ref::<::arrow::array::Float32Array>().unwrap();
+            for i in 0..array.len() {
+                assert_eq!(array.value(i), 6.0);
+            }
+        }
         Ok(())
     }
 
     #[test]
-    fn test_repeat() -> Result<(), Box<dyn Error>> {
+    fn test_repeat_scalar() -> Result<(), Box<dyn Error>> {
         let conn = Connection::open_in_memory()?;
         conn.register_scalar_function::<Repeat>("nobie_repeat")?;
 
         let batches = conn
-            .prepare("select nobie_repeat('Ho ho ho, 🎅🎄', 10) as message from range(8)")?
+            .prepare("select nobie_repeat('Ho ho ho 🎅🎄', 3) as message from range(5)")?
             .query_arrow([])?
             .collect::<Vec<_>>();
 
-        print_batches(&batches)?;
+        for batch in batches.iter() {
+            let array = batch.column(0);
+            let array = array.as_any().downcast_ref::<::arrow::array::StringArray>().unwrap();
+            for i in 0..array.len() {
+                assert_eq!(array.value(i), "Ho ho ho 🎅🎄Ho ho ho 🎅🎄Ho ho ho 🎅🎄");
+            }
+        }
 
         Ok(())
     }
 
     #[test]
-    fn test_multiple_signatures() -> Result<(), Box<dyn Error>> {
+    fn test_multiple_signatures_scalar() -> Result<(), Box<dyn Error>> {
         let conn = Connection::open_in_memory()?;
-        conn.register_scalar_function::<ArrowMultipleSignatureScalar>("nobie_multi_sig")?;
+        conn.register_scalar_function::<ArrowOverloaded>("multi_sig_udf")?;
 
         let batches = conn
-            .prepare("select nobie_multi_sig('1230.0', 5) as message from range(8)")?
+            .prepare("select multi_sig_udf('3', 5) as message from range(2)")?
             .query_arrow([])?
             .collect::<Vec<_>>();
 
-        print_batches(&batches)?;
+        for batch in batches.iter() {
+            let array = batch.column(0);
+            let array = array.as_any().downcast_ref::<::arrow::array::Float32Array>().unwrap();
+            for i in 0..array.len() {
+                assert_eq!(array.value(i), 15.0);
+            }
+        }
 
         let batches = conn
-            .prepare("select nobie_multi_sig(12, 10) as message from range(8)")?
+            .prepare("select multi_sig_udf(12, 10) as message from range(2)")?
             .query_arrow([])?
             .collect::<Vec<_>>();
 
-        print_batches(&batches)?;
+        for batch in batches.iter() {
+            let array = batch.column(0);
+            let array = array.as_any().downcast_ref::<::arrow::array::Float32Array>().unwrap();
+            for i in 0..array.len() {
+                assert_eq!(array.value(i), 120.0);
+            }
+        }
 
         Ok(())
     }
 
-    use ::arrow::{array::StringArray, util::pretty::print_batches};
+    use ::arrow::array::StringArray;
     #[cfg(feature = "vtab-loadable")]
     use duckdb_loadable_macros::duckdb_entrypoint;
-    use libduckdb_sys::{duckdb_result_arrow_array, duckdb_string_t, duckdb_string_t_data};
-    use num::Float;
+    use libduckdb_sys::duckdb_string_t;
 
     // this function is never called, but is still type checked
     // Exposes a extern C function named "libhello_ext_init" in the compiled dynamic library,
