@@ -636,6 +636,29 @@ mod test {
         }
     }
 
+    struct ErrorScalar {}
+
+    impl VScalar for ErrorScalar {
+        type State = ();
+
+        unsafe fn invoke(
+            _: &Self::State,
+            input: &mut DataChunkHandle,
+            _: &mut dyn WritableVector,
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let mut msg = input.flat_vector(0).as_slice_with_len::<duckdb_string_t>(input.len())[0];
+            let string = DuckString::new(&mut msg).as_str();
+            Err(format!("Error: {}", string).into())
+        }
+
+        fn signatures() -> Vec<ScalarFunctionSignature> {
+            vec![ScalarFunctionSignature::exact(
+                vec![LogicalTypeId::Varchar.into()],
+                LogicalTypeId::Varchar.into(),
+            )]
+        }
+    }
+
     #[derive(Debug)]
     struct TestState {
         #[allow(dead_code)]
@@ -751,6 +774,21 @@ mod test {
         while let Some(row) = rows.next()? {
             let hello: String = row.get(0)?;
             assert_eq!(hello, "hi");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_scalar_error() -> Result<(), Box<dyn Error>> {
+        let conn = Connection::open_in_memory()?;
+        conn.register_scalar_function::<ErrorScalar>("error_udf")?;
+
+        let mut stmt = conn.prepare("select error_udf('blurg') as hello")?;
+        if let Err(err) = stmt.query([]) {
+            assert!(err.to_string().contains("Error: blurg"));
+        } else {
+            panic!("Expected an error");
         }
 
         Ok(())
