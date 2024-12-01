@@ -391,7 +391,7 @@ impl InnerConnection {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::core::Inserter;
+    use crate::{core::Inserter, types::DuckString};
     use std::{
         error::Error,
         ffi::{c_char, CString},
@@ -648,7 +648,7 @@ mod test {
             let values = values.as_slice_with_len::<duckdb_string_t>(input.len());
             let strings = values
                 .iter()
-                .map(|ptr| arrow::DuckString::new(&mut { *ptr }).as_str().to_string())
+                .map(|ptr| DuckString::new(&mut { *ptr }).as_str().to_string())
                 .take(input.len());
             let output = output.flat_vector();
             for s in strings {
@@ -681,7 +681,7 @@ mod test {
             let values = values.as_slice_with_len::<duckdb_string_t>(input.len());
             let strings = values
                 .iter()
-                .map(|ptr| arrow::DuckString::new(&mut { *ptr }).as_str().to_string());
+                .map(|ptr| DuckString::new(&mut { *ptr }).as_str().to_string());
             let counts = counts.as_slice_with_len::<i32>(input.len());
             for (count, value) in counts.iter().zip(strings).take(input.len()) {
                 output.insert(0, value.repeat((*count) as usize).as_str());

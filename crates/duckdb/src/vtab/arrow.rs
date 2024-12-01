@@ -7,7 +7,10 @@ use std::{
     sync::Arc,
 };
 
-use crate::core::{ArrayVector, FlatVector, Inserter, ListVector, StructVector, Vector};
+use crate::{
+    core::{ArrayVector, FlatVector, Inserter, ListVector, StructVector, Vector},
+    types::DuckString,
+};
 use arrow::{
     array::{
         as_boolean_array, as_generic_binary_array, as_large_list_array, as_list_array, as_primitive_array,
@@ -235,33 +238,6 @@ pub fn to_duckdb_logical_type(data_type: &DataType) -> Result<LogicalTypeHandle,
             "Unsupported data type: {data_type}, please file an issue https://github.com/wangfenjin/duckdb-rs"
         )
         .into()),
-    }
-}
-
-/// Add a lifetime parameter and PhantomData to tie it to that lifetime
-pub struct DuckString<'a> {
-    ptr: &'a mut duckdb_string_t,
-}
-
-impl<'a> DuckString<'a> {
-    pub(crate) fn new(ptr: &'a mut duckdb_string_t) -> Self {
-        DuckString { ptr }
-    }
-}
-
-impl<'a> DuckString<'a> {
-    /// convert duckdb_string_t to a copy on write string
-    pub fn as_str(&mut self) -> std::borrow::Cow<'a, str> {
-        String::from_utf8_lossy(self.as_bytes())
-    }
-
-    /// convert duckdb_string_t to a byte slice
-    pub fn as_bytes(&mut self) -> &'a [u8] {
-        unsafe {
-            let len = duckdb_string_t_length(*self.ptr);
-            let c_ptr = duckdb_string_t_data(self.ptr);
-            std::slice::from_raw_parts(c_ptr as *const u8, len as usize)
-        }
     }
 }
 
