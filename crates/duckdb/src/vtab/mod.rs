@@ -546,10 +546,7 @@ mod test {
     impl ArrowScalar for ArrowMultiplyScalar {
         type State = MockState;
 
-        fn invoke(state: &Self::State, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
-            println!("state: {:?}", state);
-            // assert_eq!("some meta", state.info);
-
+        fn invoke(_: &Self::State, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
             let a = input
                 .column(0)
                 .as_any()
