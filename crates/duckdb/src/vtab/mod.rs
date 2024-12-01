@@ -367,7 +367,7 @@ impl Connection {
             let scalar_function = ScalarFunction::new(name)?;
             signature.register_with_scalar(&scalar_function);
             scalar_function.set_function(Some(scalar_func::<S>));
-            // scalar_function.set_extra_info::<S::State>();
+            scalar_function.set_extra_info::<S::State>();
             set.add_function(scalar_function)?;
         }
         self.db.borrow_mut().register_scalar_function_set(set)
@@ -584,7 +584,9 @@ mod test {
     impl ArrowScalar for ArrowOverloaded {
         type State = MockState;
 
-        fn invoke(_: &Self::State, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+        fn invoke(s: &Self::State, input: RecordBatch) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+            assert_eq!("some meta", s.info);
+
             let a = input.column(0);
             let b = input.column(1);
 
@@ -637,16 +639,29 @@ mod test {
         }
     }
 
+    #[derive(Debug)]
+    struct TestState {
+        #[allow(dead_code)]
+        inner: i32,
+    }
+
+    impl Default for TestState {
+        fn default() -> Self {
+            TestState { inner: 42 }
+        }
+    }
+
     struct EchoScalar {}
 
     impl VScalar for EchoScalar {
-        type State = ();
+        type State = TestState;
 
         unsafe fn invoke(
-            _: &Self::State,
+            s: &Self::State,
             input: &mut DataChunkHandle,
             output: &mut dyn WritableVector,
         ) -> Result<(), Box<dyn std::error::Error>> {
+            assert_eq!(s.inner, 42);
             let values = input.flat_vector(0);
             let values = values.as_slice_with_len::<duckdb_string_t>(input.len());
             let strings = values
