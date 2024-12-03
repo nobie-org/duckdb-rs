@@ -437,7 +437,7 @@ pub fn flat_vector_to_arrow_array(
         LogicalTypeId::TimestampNs => {
             // even nano second precision is stored in micros when using the c api
             let data = vector.as_slice_with_len::<duckdb_timestamp>(len);
-            let nanos = data.iter().map(|duckdb_timestamp { micros }| *micros * 1000);
+            let nanos = data.iter().map(|duckdb_timestamp { micros }| *micros );
             let structs = TimestampNanosecondArray::from_iter_values_with_nulls(
                 nanos,
                 Some(NullBuffer::new(BooleanBuffer::collect_bool(data.len(), |row| {
